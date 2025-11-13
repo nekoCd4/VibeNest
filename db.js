@@ -1,345 +1,408 @@
-import sqlite3 from 'sqlite3';
-import path from 'path';
+import express from 'express';
+import session from 'express-session';
 import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
+import multer from 'multer';
+import { v4 as uuidv4 } from 'uuid';
+import bcrypt from 'bcryptjs';
+import passport from 'passport';
+import LocalStrategy from 'passport-local';
+import GoogleStrategy from 'passport-google-oauth20';
+import MicrosoftStrategy from 'passport-microsoft';
+import dotenv from 'dotenv';
+import { initializeDb, users, photos, likes, comments } from './db.js';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const db = new sqlite3.Database(path.join(__dirname, 'vibenest.db'));
+dotenv.config();
 
-// Enable foreign keys and promisify basic operations
-db.run('PRAGMA foreign_keys = ON');
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
-// Helper function to promisify db.run
-function dbRun(sql, params = []) {
-  return new Promise((resolve, reject) => {
-    db.run(sql, params, function(err) {
-      if (err) reject(err);
-      else resolve({ lastID: this.lastID, changes: this.changes });
-    });
-  });
-}
+// Initialize database
+initializeDb();
 
-// Helper function to promisify db.get
-function dbGet(sql, params = []) {
-  return new Promise((resolve, reject) => {
-    db.get(sql, params, (err, row) => {
-      if (err) reject(err);
-      else resolve(row);
-    });
-  });
-}
+const app = express();
+app.set('trust proxy', 1);
 
-// Helper function to promisify db.all
-function dbAll(sql, params = []) {
-  return new Promise((resolve, reject) => {
-    db.all(sql, params, (err, rows) => {
-      if (err) reject(err);
-      else resolve(rows || []);
-    });
-  });
-}
+// ====================
+// Middleware Setup
+// ====================
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+app.use(express.static(join(__dirname, 'public')));
+app.use('/uploads', express.static(join(__dirname, 'uploads')));
 
-// Initialize database schema
-export async function initializeDb() {
-  const createTables = [
-    `
-    CREATE TABLE IF NOT EXISTS users (
-      id TEXT PRIMARY KEY,
-      username TEXT UNIQUE NOT NULL,
-      email TEXT UNIQUE NOT NULL,
-      password TEXT,
-      displayName TEXT NOT NULL,
-      profilePic TEXT,
-      bio TEXT,
-      authProvider TEXT,
-      createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-    `,
-    `
-    CREATE TABLE IF NOT EXISTS photos (
-      id TEXT PRIMARY KEY,
-      userId TEXT NOT NULL,
-      filename TEXT NOT NULL,
-      caption TEXT,
-      likes INTEGER DEFAULT 0,
-      createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (userId) REFERENCES users(id) ON DELETE CASCADE
-    )
-    `,
-    `
-    CREATE TABLE IF NOT EXISTS likes (
-      id TEXT PRIMARY KEY,
-      photoId TEXT NOT NULL,
-      userId TEXT NOT NULL,
-      createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
-      UNIQUE(photoId, userId),
-      FOREIGN KEY (photoId) REFERENCES photos(id) ON DELETE CASCADE,
-      FOREIGN KEY (userId) REFERENCES users(id) ON DELETE CASCADE
-    )
-    `,
-    `
-    CREATE TABLE IF NOT EXISTS comments (
-      id TEXT PRIMARY KEY,
-      photoId TEXT NOT NULL,
-      userId TEXT NOT NULL,
-      text TEXT NOT NULL,
-      createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (photoId) REFERENCES photos(id) ON DELETE CASCADE,
-      FOREIGN KEY (userId) REFERENCES users(id) ON DELETE CASCADE
-    )
-    `,
-    `
-    CREATE TABLE IF NOT EXISTS videos (
-      id TEXT PRIMARY KEY,
-      userId TEXT NOT NULL,
-      filename TEXT NOT NULL,
-      caption TEXT,
-      likes INTEGER DEFAULT 0,
-      createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (userId) REFERENCES users(id) ON DELETE CASCADE
-    )
-    `,
-    `
-    CREATE TABLE IF NOT EXISTS video_likes (
-      id TEXT PRIMARY KEY,
-      videoId TEXT NOT NULL,
-      userId TEXT NOT NULL,
-      createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
-      UNIQUE(videoId, userId),
-      FOREIGN KEY (videoId) REFERENCES videos(id) ON DELETE CASCADE,
-      FOREIGN KEY (userId) REFERENCES users(id) ON DELETE CASCADE
-    )
-    `,
-    `
-    CREATE TABLE IF NOT EXISTS video_comments (
-      id TEXT PRIMARY KEY,
-      videoId TEXT NOT NULL,
-      userId TEXT NOT NULL,
-      text TEXT NOT NULL,
-      createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (videoId) REFERENCES videos(id) ON DELETE CASCADE,
-      FOREIGN KEY (userId) REFERENCES users(id) ON DELETE CASCADE
-    )
-    `
-  ];
+// Session middleware
+app.use(session({
+  secret: process.env.SESSION_SECRET || 'your-secret-key-change-in-production',
+  resave: false,
+  saveUninitialized: true,
+  cookie: { secure: false, httpOnly: true, maxAge: 1000 * 60 * 60 * 24 * 7 } // 7 days
+}));
 
-  for (const sql of createTables) {
-    try {
-      await dbRun(sql);
-    } catch (err) {
-      console.error('Error creating table:', err);
+// Passport initialization
+app.use(passport.initialize());
+app.use(passport.session());
+
+// ====================
+// Multer Setup
+// ====================
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, join(__dirname, 'uploads'));
+  },
+  filename: (req, file, cb) => {
+    const uniqueName = `${Date.now()}-${uuidv4()}${file.originalname.substring(file.originalname.lastIndexOf('.'))}`;
+    cb(null, uniqueName);
+  }
+});
+
+const upload = multer({ 
+  storage,
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype.startsWith('image/')) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only image files allowed'));
     }
   }
-}
+});
 
-// User operations
-export const users = {
-  create: async (user) => {
-    const sql = `
-      INSERT INTO users (id, username, email, password, displayName, authProvider)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `;
-    await dbRun(sql, [user.id, user.username, user.email, user.password || null, user.displayName, user.authProvider || 'local']);
-    return user;
-  },
+// ====================
+// View Setup
+// ====================
+app.set('views', join(__dirname, 'views'));
+app.set('view engine', 'ejs');
 
-  findById: async (id) => {
-    return await dbGet('SELECT * FROM users WHERE id = ?', [id]);
-  },
+// ====================
+// Passport Configuration
+// ====================
 
-  findByUsername: async (username) => {
-    return await dbGet('SELECT * FROM users WHERE username = ?', [username]);
+// Local Strategy
+passport.use(new LocalStrategy.Strategy(
+  {
+    usernameField: 'username',
+    passwordField: 'password'
   },
+  (username, password, done) => {
+    const user = users.findByUsername(username);
+    if (!user) {
+      return done(null, false, { message: 'Username not found' });
+    }
+    if (!bcrypt.compareSync(password, user.password)) {
+      return done(null, false, { message: 'Password incorrect' });
+    }
+    return done(null, user);
+  }
+));
 
-  findByEmail: async (email) => {
-    return await dbGet('SELECT * FROM users WHERE email = ?', [email]);
+// Google Strategy
+passport.use(new GoogleStrategy.Strategy(
+  {
+    clientID: process.env.GOOGLE_CLIENT_ID || 'your-google-client-id',
+    clientSecret: process.env.GOOGLE_CLIENT_SECRET || 'your-google-client-secret',
+    callbackURL: process.env.GOOGLE_CALLBACK_URL || 'http://localhost:3000/auth/google/callback'
   },
+  (accessToken, refreshToken, profile, done) => {
+    let user = users.findByEmail(profile.emails[0].value);
+    if (!user) {
+      user = {
+        id: uuidv4(),
+        username: profile.displayName.replace(/\s+/g, '').toLowerCase() + uuidv4().slice(0, 4),
+        email: profile.emails[0].value,
+        displayName: profile.displayName,
+        profilePic: profile.photos[0]?.value,
+        authProvider: 'google'
+      };
+      users.create(user);
+    }
+    return done(null, user);
+  }
+));
 
-  update: async (id, updates) => {
-    const fields = Object.keys(updates).map(key => `${key} = ?`).join(', ');
-    const values = Object.values(updates);
-    const sql = `UPDATE users SET ${fields} WHERE id = ?`;
-    await dbRun(sql, [...values, id]);
+// Microsoft/Entra ID Strategy
+passport.use(new MicrosoftStrategy.Strategy(
+  {
+    clientID: process.env.ENTRA_CLIENT_ID || 'your-entra-client-id',
+    clientSecret: process.env.ENTRA_CLIENT_SECRET || 'your-entra-client-secret',
+    callbackURL: process.env.ENTRA_CALLBACK_URL || 'http://localhost:3000/auth/entra/callback',
+    scope: ['user.read']
   },
+  (accessToken, refreshToken, profile, done) => {
+    // Extract email safely - Entra may provide it in different ways
+    const email = (profile.emails && profile.emails[0] && profile.emails[0].value) || 
+                  profile.mail || 
+                  profile.userPrincipalName ||
+                  `${profile.displayName.replace(/\s+/g, '').toLowerCase()}@entra.local`;
+    
+    let user = users.findByEmail(email);
+    if (!user) {
+      user = {
+        id: uuidv4(),
+        username: profile.displayName.replace(/\s+/g, '').toLowerCase() + uuidv4().slice(0, 4),
+        email: email,
+        displayName: profile.displayName,
+        authProvider: 'entra'
+      };
+      users.create(user);
+    }
+    return done(null, user);
+  }
+));
+
+// Serialize/Deserialize
+passport.serializeUser((user, done) => {
+  done(null, user.id);
+});
+
+passport.deserializeUser((id, done) => {
+  const user = users.findById(id);
+  done(null, user);
+});
+
+// ====================
+// Helper Functions
+// ====================
+const isAuthenticated = (req, res, next) => {
+  if (req.isAuthenticated()) {
+    return next();
+  }
+  res.redirect('/login');
 };
 
-// Photo operations
-export const photos = {
-  create: async (photo) => {
-    const sql = `
-      INSERT INTO photos (id, userId, filename, caption)
-      VALUES (?, ?, ?, ?)
-    `;
-    await dbRun(sql, [photo.id, photo.userId, photo.filename, photo.caption || '']);
-    return photo;
-  },
+// ====================
+// Routes
+// ====================
 
-  findById: async (id) => {
-    return await dbGet('SELECT * FROM photos WHERE id = ?', [id]);
-  },
+// Home / Feed
+app.get('/', (req, res) => {
+  const allPhotos = photos.getAll();
+  res.render('feed', { user: req.user, photos: allPhotos });
+});
 
-  getAll: async () => {
-    return await dbAll(`
-      SELECT p.*, u.username, u.displayName, u.profilePic,
-      (SELECT COUNT(*) FROM likes WHERE photoId = p.id) as likes
-      FROM photos p
-      JOIN users u ON p.userId = u.id
-      ORDER BY p.createdAt DESC
-    `);
-  },
+// Login page
+app.get('/login', (req, res) => {
+  if (req.isAuthenticated()) {
+    return res.redirect('/');
+  }
+  res.render('login', { message: req.query.message });
+});
 
-  getByUserId: async (userId) => {
-    return await dbAll(`
-      SELECT p.*, u.username, u.displayName,
-      (SELECT COUNT(*) FROM likes WHERE photoId = p.id) as likes
-      FROM photos p
-      JOIN users u ON p.userId = u.id
-      WHERE p.userId = ?
-      ORDER BY p.createdAt DESC
-    `, [userId]);
-  },
+// Register page
+app.get('/register', (req, res) => {
+  if (req.isAuthenticated()) {
+    return res.redirect('/');
+  }
+  res.render('register', { message: req.query.message });
+});
 
-  delete: async (id) => {
-    await dbRun('DELETE FROM photos WHERE id = ?', [id]);
-  },
-};
+// Handle local registration
+app.post('/register', (req, res) => {
+  const { username, email, password, confirmPassword, displayName } = req.body;
 
-// Like operations
-export const likes = {
-  create: async (likeData) => {
-    const sql = `
-      INSERT INTO likes (id, photoId, userId)
-      VALUES (?, ?, ?)
-    `;
-    await dbRun(sql, [likeData.id, likeData.photoId, likeData.userId]);
-  },
+  if (password !== confirmPassword) {
+    return res.render('register', { message: 'Passwords do not match' });
+  }
 
-  remove: async (photoId, userId) => {
-    await dbRun('DELETE FROM likes WHERE photoId = ? AND userId = ?', [photoId, userId]);
-  },
+  if (users.findByUsername(username)) {
+    return res.render('register', { message: 'Username already taken' });
+  }
 
-  findByPhotoAndUser: async (photoId, userId) => {
-    return await dbGet('SELECT * FROM likes WHERE photoId = ? AND userId = ?', [photoId, userId]);
-  },
+  if (users.findByEmail(email)) {
+    return res.render('register', { message: 'Email already registered' });
+  }
 
-  countByPhoto: async (photoId) => {
-    const result = await dbGet('SELECT COUNT(*) as count FROM likes WHERE photoId = ?', [photoId]);
-    return result.count;
-  },
-};
+  const hashedPassword = bcrypt.hashSync(password, 10);
+  const user = {
+    id: uuidv4(),
+    username,
+    email,
+    password: hashedPassword,
+    displayName: displayName || username,
+    authProvider: 'local'
+  };
 
-// Comment operations
-export const comments = {
-  create: async (comment) => {
-    const sql = `
-      INSERT INTO comments (id, photoId, userId, text)
-      VALUES (?, ?, ?, ?)
-    `;
-    await dbRun(sql, [comment.id, comment.photoId, comment.userId, comment.text]);
-    return comment;
-  },
+  users.create(user);
+  req.logIn(user, (err) => {
+    if (err) return res.redirect('/register');
+    res.redirect('/');
+  });
+});
 
-  getByPhoto: async (photoId) => {
-    return await dbAll(`
-      SELECT c.*, u.username, u.displayName, u.profilePic
-      FROM comments c
-      JOIN users u ON c.userId = u.id
-      WHERE c.photoId = ?
-      ORDER BY c.createdAt ASC
-    `, [photoId]);
-  },
+// Handle local login
+app.post('/login', passport.authenticate('local', {
+  successRedirect: '/',
+  failureRedirect: '/login?message=Invalid%20credentials',
+  failureMessage: true
+}));
 
-  delete: async (id) => {
-    await dbRun('DELETE FROM comments WHERE id = ?', [id]);
-  },
-};
+// Google OAuth
+app.get('/auth/google', passport.authenticate('google', { scope: ['profile', 'email'] }));
+app.get('/auth/google/callback', passport.authenticate('google', {
+  successRedirect: '/',
+  failureRedirect: '/login'
+}));
 
-// Video operations
-export const videos = {
-  create: async (video) => {
-    const sql = `
-      INSERT INTO videos (id, userId, filename, caption)
-      VALUES (?, ?, ?, ?)
-    `;
-    await dbRun(sql, [video.id, video.userId, video.filename, video.caption || '']);
-    return video;
-  },
+// Entra ID OAuth
+app.get('/auth/entra', passport.authenticate('microsoft', { scope: ['user.read'] }));
+app.get('/auth/entra/callback', passport.authenticate('microsoft', {
+  successRedirect: '/',
+  failureRedirect: '/login'
+}));
 
-  findById: async (id) => {
-    return await dbGet('SELECT * FROM videos WHERE id = ?', [id]);
-  },
+// Logout
+app.get('/logout', (req, res) => {
+  req.logOut((err) => {
+    if (err) return res.status(500).send('Logout failed');
+    res.redirect('/login');
+  });
+});
 
-  getAll: async () => {
-    return await dbAll(`
-      SELECT v.*, u.username, u.displayName, u.profilePic,
-      (SELECT COUNT(*) FROM video_likes WHERE videoId = v.id) as likes
-      FROM videos v
-      JOIN users u ON v.userId = u.id
-      ORDER BY v.createdAt DESC
-    `);
-  },
+// Settings page
+app.get('/settings', isAuthenticated, (req, res) => {
+  res.render('settings', { user: req.user });
+});
 
-  getByUserId: async (userId) => {
-    return await dbAll(`
-      SELECT v.*, u.username, u.displayName,
-      (SELECT COUNT(*) FROM video_likes WHERE videoId = v.id) as likes
-      FROM videos v
-      JOIN users u ON v.userId = u.id
-      WHERE v.userId = ?
-      ORDER BY v.createdAt DESC
-    `, [userId]);
-  },
+// Update settings
+app.post('/api/settings', isAuthenticated, (req, res) => {
+  const { displayName, bio } = req.body;
+  users.update(req.user.id, { displayName, bio });
+  req.user.displayName = displayName;
+  req.user.bio = bio;
+  res.json({ success: true });
+});
 
-  delete: async (id) => {
-    await dbRun('DELETE FROM videos WHERE id = ?', [id]);
-  },
-};
+// Upload page
+app.get('/upload', isAuthenticated, (req, res) => {
+  res.render('upload', { user: req.user });
+});
 
-// Video likes operations
-export const videoLikes = {
-  create: async (likeData) => {
-    const sql = `
-      INSERT INTO video_likes (id, videoId, userId)
-      VALUES (?, ?, ?)
-    `;
-    await dbRun(sql, [likeData.id, likeData.videoId, likeData.userId]);
-  },
+// Handle photo upload
+app.post('/api/upload', isAuthenticated, upload.single('photo'), (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ error: 'No file uploaded' });
+  }
 
-  remove: async (videoId, userId) => {
-    await dbRun('DELETE FROM video_likes WHERE videoId = ? AND userId = ?', [videoId, userId]);
-  },
+  const photo = {
+    id: uuidv4(),
+    userId: req.user.id,
+    filename: req.file.filename,
+    caption: req.body.caption || ''
+  };
 
-  findByVideoAndUser: async (videoId, userId) => {
-    return await dbGet('SELECT * FROM video_likes WHERE videoId = ? AND userId = ?', [videoId, userId]);
-  },
+  photos.create(photo);
+  res.json({ success: true, photo });
+});
 
-  countByVideo: async (videoId) => {
-    const result = await dbGet('SELECT COUNT(*) as count FROM video_likes WHERE videoId = ?', [videoId]);
-    return result.count;
-  },
-};
+// Get all photos
+app.get('/api/photos', (req, res) => {
+  const allPhotos = photos.getAll();
+  res.json({ photos: allPhotos });
+});
 
-// Video comments operations
-export const videoComments = {
-  create: async (comment) => {
-    const sql = `
-      INSERT INTO video_comments (id, videoId, userId, text)
-      VALUES (?, ?, ?, ?)
-    `;
-    await dbRun(sql, [comment.id, comment.videoId, comment.userId, comment.text]);
-    return comment;
-  },
+// Get user's photos
+app.get('/api/user/:userId/photos', (req, res) => {
+  const userPhotos = photos.getByUserId(req.params.userId);
+  res.json({ photos: userPhotos });
+});
 
-  getByVideo: async (videoId) => {
-    return await dbAll(`
-      SELECT c.*, u.username, u.displayName, u.profilePic
-      FROM video_comments c
-      JOIN users u ON c.userId = u.id
-      WHERE c.videoId = ?
-      ORDER BY c.createdAt ASC
-    `, [videoId]);
-  },
+// Like a photo
+app.post('/api/photos/:photoId/like', isAuthenticated, (req, res) => {
+  const photo = photos.findById(req.params.photoId);
+  if (!photo) {
+    return res.status(404).json({ error: 'Photo not found' });
+  }
 
-  delete: async (id) => {
-    await dbRun('DELETE FROM video_comments WHERE id = ?', [id]);
-  },
-};
+  const existingLike = likes.findByPhotoAndUser(req.params.photoId, req.user.id);
+  if (existingLike) {
+    likes.remove(req.params.photoId, req.user.id);
+    res.json({ success: true, liked: false, likes: likes.countByPhoto(req.params.photoId) });
+  } else {
+    likes.create({
+      id: uuidv4(),
+      photoId: req.params.photoId,
+      userId: req.user.id
+    });
+    res.json({ success: true, liked: true, likes: likes.countByPhoto(req.params.photoId) });
+  }
+});
+
+// Comment on a photo
+app.post('/api/photos/:photoId/comment', isAuthenticated, (req, res) => {
+  const { text } = req.body;
+  if (!text) {
+    return res.status(400).json({ error: 'Comment text required' });
+  }
+
+  const photo = photos.findById(req.params.photoId);
+  if (!photo) {
+    return res.status(404).json({ error: 'Photo not found' });
+  }
+
+  const comment = {
+    id: uuidv4(),
+    photoId: req.params.photoId,
+    userId: req.user.id,
+    text
+  };
+
+  comments.create(comment);
+  const newComment = {
+    ...comment,
+    username: req.user.username,
+    displayName: req.user.displayName,
+    profilePic: req.user.profilePic
+  };
+
+  res.json({ success: true, comment: newComment });
+});
+
+// Get comments for a photo
+app.get('/api/photos/:photoId/comments', (req, res) => {
+  const photoComments = comments.getByPhoto(req.params.photoId);
+  res.json({ comments: photoComments });
+});
+
+// Delete a photo (only owner)
+app.delete('/api/photos/:photoId', isAuthenticated, (req, res) => {
+  const photo = photos.findById(req.params.photoId);
+  if (!photo) {
+    return res.status(404).json({ error: 'Photo not found' });
+  }
+  if (photo.userId !== req.user.id) {
+    return res.status(403).json({ error: 'Unauthorized' });
+  }
+
+  photos.delete(req.params.photoId);
+  res.json({ success: true });
+});
+
+// Delete a comment (only owner)
+app.delete('/api/comments/:commentId', isAuthenticated, (req, res) => {
+  const comment = comments.getByPhoto(req.params.commentId);
+  if (!comment) {
+    return res.status(404).json({ error: 'Comment not found' });
+  }
+  if (comment.userId !== req.user.id) {
+    return res.status(403).json({ error: 'Unauthorized' });
+  }
+
+  comments.delete(req.params.commentId);
+  res.json({ success: true });
+});
+
+// ====================
+// Error Handling
+// ====================
+app.use((err, req, res, next) => {
+  console.error(err);
+  res.status(500).render('error', { error: err.message || 'Something went wrong' });
+});
+
+// ====================
+// Start Server
+// ====================
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`✨ VibeNest running on http://localhost:${PORT}`);
+  console.log(`Make sure to set your OAuth credentials in .env`);
+});
