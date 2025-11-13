@@ -23,7 +23,7 @@
     "passport-microsoft": "^2.0.7",
     "passport-local": "^1.0.0",
     "bcryptjs": "^2.4.3",
-    "better-sqlite3": "^9.2.2",
+    "sqlite3": "^5.1.7",
     "uuid": "^9.0.1"
   }
 }

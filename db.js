@@ -1,17 +1,47 @@
-import Database from 'better-sqlite3';
+import sqlite3 from 'sqlite3';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const db = new Database(path.join(__dirname, 'vibenest.db'));
+const db = new sqlite3.Database(path.join(__dirname, 'vibenest.db'));
 
-// Enable foreign keys
-db.pragma('foreign_keys = ON');
+// Enable foreign keys and promisify basic operations
+db.run('PRAGMA foreign_keys = ON');
+
+// Helper function to promisify db.run
+function dbRun(sql, params = []) {
+  return new Promise((resolve, reject) => {
+    db.run(sql, params, function(err) {
+      if (err) reject(err);
+      else resolve({ lastID: this.lastID, changes: this.changes });
+    });
+  });
+}
+
+// Helper function to promisify db.get
+function dbGet(sql, params = []) {
+  return new Promise((resolve, reject) => {
+    db.get(sql, params, (err, row) => {
+      if (err) reject(err);
+      else resolve(row);
+    });
+  });
+}
+
+// Helper function to promisify db.all
+function dbAll(sql, params = []) {
+  return new Promise((resolve, reject) => {
+    db.all(sql, params, (err, rows) => {
+      if (err) reject(err);
+      else resolve(rows || []);
+    });
+  });
+}
 
 // Initialize database schema
-export function initializeDb() {
-  // Users table
-  db.exec(`
+export async function initializeDb() {
+  const createTables = [
+    `
     CREATE TABLE IF NOT EXISTS users (
       id TEXT PRIMARY KEY,
       username TEXT UNIQUE NOT NULL,
@@ -23,10 +53,8 @@ export function initializeDb() {
       authProvider TEXT,
       createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
     )
-  `);
-
-  // Photos table
-  db.exec(`
+    `,
+    `
     CREATE TABLE IF NOT EXISTS photos (
       id TEXT PRIMARY KEY,
       userId TEXT NOT NULL,
@@ -36,10 +64,8 @@ export function initializeDb() {
       createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (userId) REFERENCES users(id) ON DELETE CASCADE
     )
-  `);
-
-  // Likes table
-  db.exec(`
+    `,
+    `
     CREATE TABLE IF NOT EXISTS likes (
       id TEXT PRIMARY KEY,
       photoId TEXT NOT NULL,
@@ -49,10 +75,8 @@ export function initializeDb() {
       FOREIGN KEY (photoId) REFERENCES photos(id) ON DELETE CASCADE,
       FOREIGN KEY (userId) REFERENCES users(id) ON DELETE CASCADE
     )
-  `);
-
-  // Comments table
-  db.exec(`
+    `,
+    `
     CREATE TABLE IF NOT EXISTS comments (
       id TEXT PRIMARY KEY,
       photoId TEXT NOT NULL,
@@ -62,127 +86,260 @@ export function initializeDb() {
       FOREIGN KEY (photoId) REFERENCES photos(id) ON DELETE CASCADE,
       FOREIGN KEY (userId) REFERENCES users(id) ON DELETE CASCADE
     )
-  `);
+    `,
+    `
+    CREATE TABLE IF NOT EXISTS videos (
+      id TEXT PRIMARY KEY,
+      userId TEXT NOT NULL,
+      filename TEXT NOT NULL,
+      caption TEXT,
+      likes INTEGER DEFAULT 0,
+      createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (userId) REFERENCES users(id) ON DELETE CASCADE
+    )
+    `,
+    `
+    CREATE TABLE IF NOT EXISTS video_likes (
+      id TEXT PRIMARY KEY,
+      videoId TEXT NOT NULL,
+      userId TEXT NOT NULL,
+      createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(videoId, userId),
+      FOREIGN KEY (videoId) REFERENCES videos(id) ON DELETE CASCADE,
+      FOREIGN KEY (userId) REFERENCES users(id) ON DELETE CASCADE
+    )
+    `,
+    `
+    CREATE TABLE IF NOT EXISTS video_comments (
+      id TEXT PRIMARY KEY,
+      videoId TEXT NOT NULL,
+      userId TEXT NOT NULL,
+      text TEXT NOT NULL,
+      createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (videoId) REFERENCES videos(id) ON DELETE CASCADE,
+      FOREIGN KEY (userId) REFERENCES users(id) ON DELETE CASCADE
+    )
+    `
+  ];
+
+  for (const sql of createTables) {
+    try {
+      await dbRun(sql);
+    } catch (err) {
+      console.error('Error creating table:', err);
+    }
+  }
 }
 
 // User operations
 export const users = {
-  create: (user) => {
-    const stmt = db.prepare(`
+  create: async (user) => {
+    const sql = `
       INSERT INTO users (id, username, email, password, displayName, authProvider)
       VALUES (?, ?, ?, ?, ?, ?)
-    `);
-    stmt.run(user.id, user.username, user.email, user.password || null, user.displayName, user.authProvider || 'local');
+    `;
+    await dbRun(sql, [user.id, user.username, user.email, user.password || null, user.displayName, user.authProvider || 'local']);
     return user;
   },
 
-  findById: (id) => {
-    return db.prepare('SELECT * FROM users WHERE id = ?').get(id);
+  findById: async (id) => {
+    return await dbGet('SELECT * FROM users WHERE id = ?', [id]);
   },
 
-  findByUsername: (username) => {
-    return db.prepare('SELECT * FROM users WHERE username = ?').get(username);
+  findByUsername: async (username) => {
+    return await dbGet('SELECT * FROM users WHERE username = ?', [username]);
   },
 
-  findByEmail: (email) => {
-    return db.prepare('SELECT * FROM users WHERE email = ?').get(email);
+  findByEmail: async (email) => {
+    return await dbGet('SELECT * FROM users WHERE email = ?', [email]);
   },
 
-  update: (id, updates) => {
+  update: async (id, updates) => {
     const fields = Object.keys(updates).map(key => `${key} = ?`).join(', ');
     const values = Object.values(updates);
-    const stmt = db.prepare(`UPDATE users SET ${fields} WHERE id = ?`);
-    stmt.run(...values, id);
+    const sql = `UPDATE users SET ${fields} WHERE id = ?`;
+    await dbRun(sql, [...values, id]);
   },
 };
 
 // Photo operations
 export const photos = {
-  create: (photo) => {
-    const stmt = db.prepare(`
+  create: async (photo) => {
+    const sql = `
       INSERT INTO photos (id, userId, filename, caption)
       VALUES (?, ?, ?, ?)
-    `);
-    stmt.run(photo.id, photo.userId, photo.filename, photo.caption || '');
+    `;
+    await dbRun(sql, [photo.id, photo.userId, photo.filename, photo.caption || '']);
     return photo;
   },
 
-  findById: (id) => {
-    return db.prepare('SELECT * FROM photos WHERE id = ?').get(id);
+  findById: async (id) => {
+    return await dbGet('SELECT * FROM photos WHERE id = ?', [id]);
   },
 
-  getAll: () => {
-    return db.prepare(`
+  getAll: async () => {
+    return await dbAll(`
       SELECT p.*, u.username, u.displayName, u.profilePic,
       (SELECT COUNT(*) FROM likes WHERE photoId = p.id) as likes
       FROM photos p
       JOIN users u ON p.userId = u.id
       ORDER BY p.createdAt DESC
-    `).all();
+    `);
   },
 
-  getByUserId: (userId) => {
-    return db.prepare(`
+  getByUserId: async (userId) => {
+    return await dbAll(`
       SELECT p.*, u.username, u.displayName,
       (SELECT COUNT(*) FROM likes WHERE photoId = p.id) as likes
       FROM photos p
       JOIN users u ON p.userId = u.id
       WHERE p.userId = ?
       ORDER BY p.createdAt DESC
-    `).all(userId);
+    `, [userId]);
   },
 
-  delete: (id) => {
-    db.prepare('DELETE FROM photos WHERE id = ?').run(id);
+  delete: async (id) => {
+    await dbRun('DELETE FROM photos WHERE id = ?', [id]);
   },
 };
 
 // Like operations
 export const likes = {
-  create: (likeData) => {
-    const stmt = db.prepare(`
+  create: async (likeData) => {
+    const sql = `
       INSERT INTO likes (id, photoId, userId)
       VALUES (?, ?, ?)
-    `);
-    stmt.run(likeData.id, likeData.photoId, likeData.userId);
+    `;
+    await dbRun(sql, [likeData.id, likeData.photoId, likeData.userId]);
   },
 
-  remove: (photoId, userId) => {
-    db.prepare('DELETE FROM likes WHERE photoId = ? AND userId = ?').run(photoId, userId);
+  remove: async (photoId, userId) => {
+    await dbRun('DELETE FROM likes WHERE photoId = ? AND userId = ?', [photoId, userId]);
   },
 
-  findByPhotoAndUser: (photoId, userId) => {
-    return db.prepare('SELECT * FROM likes WHERE photoId = ? AND userId = ?').get(photoId, userId);
+  findByPhotoAndUser: async (photoId, userId) => {
+    return await dbGet('SELECT * FROM likes WHERE photoId = ? AND userId = ?', [photoId, userId]);
   },
 
-  countByPhoto: (photoId) => {
-    const result = db.prepare('SELECT COUNT(*) as count FROM likes WHERE photoId = ?').get(photoId);
+  countByPhoto: async (photoId) => {
+    const result = await dbGet('SELECT COUNT(*) as count FROM likes WHERE photoId = ?', [photoId]);
     return result.count;
   },
 };
 
 // Comment operations
 export const comments = {
-  create: (comment) => {
-    const stmt = db.prepare(`
+  create: async (comment) => {
+    const sql = `
       INSERT INTO comments (id, photoId, userId, text)
       VALUES (?, ?, ?, ?)
-    `);
-    stmt.run(comment.id, comment.photoId, comment.userId, comment.text);
+    `;
+    await dbRun(sql, [comment.id, comment.photoId, comment.userId, comment.text]);
     return comment;
   },
 
-  getByPhoto: (photoId) => {
-    return db.prepare(`
+  getByPhoto: async (photoId) => {
+    return await dbAll(`
       SELECT c.*, u.username, u.displayName, u.profilePic
       FROM comments c
       JOIN users u ON c.userId = u.id
       WHERE c.photoId = ?
       ORDER BY c.createdAt ASC
-    `).all(photoId);
+    `, [photoId]);
   },
 
-  delete: (id) => {
-    db.prepare('DELETE FROM comments WHERE id = ?').run(id);
+  delete: async (id) => {
+    await dbRun('DELETE FROM comments WHERE id = ?', [id]);
+  },
+};
+
+// Video operations
+export const videos = {
+  create: async (video) => {
+    const sql = `
+      INSERT INTO videos (id, userId, filename, caption)
+      VALUES (?, ?, ?, ?)
+    `;
+    await dbRun(sql, [video.id, video.userId, video.filename, video.caption || '']);
+    return video;
+  },
+
+  findById: async (id) => {
+    return await dbGet('SELECT * FROM videos WHERE id = ?', [id]);
+  },
+
+  getAll: async () => {
+    return await dbAll(`
+      SELECT v.*, u.username, u.displayName, u.profilePic,
+      (SELECT COUNT(*) FROM video_likes WHERE videoId = v.id) as likes
+      FROM videos v
+      JOIN users u ON v.userId = u.id
+      ORDER BY v.createdAt DESC
+    `);
+  },
+
+  getByUserId: async (userId) => {
+    return await dbAll(`
+      SELECT v.*, u.username, u.displayName,
+      (SELECT COUNT(*) FROM video_likes WHERE videoId = v.id) as likes
+      FROM videos v
+      JOIN users u ON v.userId = u.id
+      WHERE v.userId = ?
+      ORDER BY v.createdAt DESC
+    `, [userId]);
+  },
+
+  delete: async (id) => {
+    await dbRun('DELETE FROM videos WHERE id = ?', [id]);
+  },
+};
+
+// Video likes operations
+export const videoLikes = {
+  create: async (likeData) => {
+    const sql = `
+      INSERT INTO video_likes (id, videoId, userId)
+      VALUES (?, ?, ?)
+    `;
+    await dbRun(sql, [likeData.id, likeData.videoId, likeData.userId]);
+  },
+
+  remove: async (videoId, userId) => {
+    await dbRun('DELETE FROM video_likes WHERE videoId = ? AND userId = ?', [videoId, userId]);
+  },
+
+  findByVideoAndUser: async (videoId, userId) => {
+    return await dbGet('SELECT * FROM video_likes WHERE videoId = ? AND userId = ?', [videoId, userId]);
+  },
+
+  countByVideo: async (videoId) => {
+    const result = await dbGet('SELECT COUNT(*) as count FROM video_likes WHERE videoId = ?', [videoId]);
+    return result.count;
+  },
+};
+
+// Video comments operations
+export const videoComments = {
+  create: async (comment) => {
+    const sql = `
+      INSERT INTO video_comments (id, videoId, userId, text)
+      VALUES (?, ?, ?, ?)
+    `;
+    await dbRun(sql, [comment.id, comment.videoId, comment.userId, comment.text]);
+    return comment;
+  },
+
+  getByVideo: async (videoId) => {
+    return await dbAll(`
+      SELECT c.*, u.username, u.displayName, u.profilePic
+      FROM video_comments c
+      JOIN users u ON c.userId = u.id
+      WHERE c.videoId = ?
+      ORDER BY c.createdAt ASC
+    `, [videoId]);
+  },
+
+  delete: async (id) => {
+    await dbRun('DELETE FROM video_comments WHERE id = ?', [id]);
   },
 };
