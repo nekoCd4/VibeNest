@@ -255,34 +255,38 @@
                 <p>Sign in to see the feed and share your moments!</p>
                 <a href="/login" class="btn-upload">Sign In</a>
             </div>
-        <% } else if (photos && photos.length === 0) { %>
+        <% } else if (posts && posts.length === 0) { %>
             <div class="empty-state">
                 <p>No photos yet. Be the first to upload!</p>
                 <a href="/upload" class="btn-upload">Upload Photo</a>
             </div>
-        <% } else if (photos) { %>
-            <% photos.forEach(photo => { %>
-                <div class="feed-item" data-photo-id="<%= photo.id %>">
+        <% } else if (posts) { %>
+            <% posts.forEach(post => { %>
+                <div class="feed-item" data-post-id="<%= post.id %>" data-type="<%= post.type %>">
                     <div class="photo-header">
                         <div class="user-info">
-                            <div class="avatar"><%= photo.displayName[0].toUpperCase() %></div>
+                            <div class="avatar"><%= (post.displayName || post.username || '?')[0]?.toUpperCase() %></div>
                             <div class="user-details">
-                                <h3><%= photo.displayName %></h3>
-                                <p>@<%= photo.username %></p>
+                                <h3><%= post.displayName %></h3>
+                                <p>@<%= post.username %></p>
                             </div>
                         </div>
                     </div>
 
-                    <img src="/uploads/<%= photo.filename %>" alt="<%= photo.caption %>" class="photo-image">
+                    <% if (post.type === 'photo') { %>
+                        <img src="/uploads/<%= post.filename %>" alt="<%= post.caption %>" class="photo-image">
+                    <% } else if (post.type === 'video') { %>
+                        <video src="/uploads/<%= post.filename %>" class="photo-image" controls></video>
+                    <% } %>
 
-                    <% if (photo.caption) { %>
-                        <div class="photo-caption"><%= photo.caption %></div>
+                    <% if (post.caption) { %>
+                        <div class="photo-caption"><%= post.caption %></div>
                     <% } %>
 
                     <div class="photo-actions">
-                        <button class="action-btn like-btn" data-photo-id="<%= photo.id %>">
+                        <button class="action-btn like-btn" data-post-id="<%= post.id %>" data-type="<%= post.type %>">
                             <span>❤️</span>
-                            <span class="like-count"><%= photo.likes || 0 %> likes</span>
+                            <span class="like-count"><%= post.likes || 0 %> likes</span>
                         </button>
                         <button class="action-btn comment-btn-open">
                             <span>💬</span>
@@ -305,8 +309,10 @@
     <script>
         document.querySelectorAll('.like-btn').forEach(btn => {
             btn.addEventListener('click', async function() {
-                const photoId = this.dataset.photoId;
-                const response = await fetch(`/api/photos/${photoId}/like`, { method: 'POST' });
+                const postId = this.dataset.postId;
+                const type = this.dataset.type; // 'photo' or 'video'
+                const endpointType = type === 'video' ? 'videos' : 'photos';
+                const response = await fetch(`/api/${endpointType}/${postId}/like`, { method: 'POST' });
                 const data = await response.json();
                 if (data.success) {
                     this.classList.toggle('liked');
@@ -328,8 +334,11 @@
                 const text = input.value;
                 if (!text.trim()) return;
 
-                const photoId = this.closest('.feed-item').dataset.photoId;
-                const response = await fetch(`/api/photos/${photoId}/comment`, {
+                const feedItem = this.closest('.feed-item');
+                const postId = feedItem.dataset.postId;
+                const type = feedItem.dataset.type;
+                const endpointType = type === 'video' ? 'videos' : 'photos';
+                const response = await fetch(`/api/${endpointType}/${postId}/comment`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ text })
@@ -337,7 +346,6 @@
 
                 if (response.ok) {
                     input.value = '';
-                    const commentsList = this.closest('.comments-section').querySelector('.comments-list');
                     location.reload(); // Reload to show new comment
                 }
             });

@@ -237,7 +237,7 @@
 
     <div class="container">
         <h2 class="header-title">Share Your Moment</h2>
-        <p class="header-subtitle">Upload a photo and add a caption</p>
+        <p class="header-subtitle">Upload a photo or video and add a caption</p>
 
         <div id="successMessage" class="success" style="display: none;">
             Photo uploaded successfully! <a href="/">View feed</a>
@@ -247,12 +247,12 @@
             <div class="form-group">
                 <label>Photo</label>
                 <div class="file-input-wrapper">
-                    <input type="file" id="photo" name="photo" accept="image/*" required>
-                    <label for="photo" class="file-label">
+                    <input type="file" id="media" name="media" accept="image/*,video/*" required>
+                    <label for="media" class="file-label">
                         <span class="file-icon">📷</span>
                         <div class="file-text">
                             <strong>Click to upload or drag and drop</strong>
-                            <span>PNG, JPG, GIF up to 10MB</span>
+                            <span>Images or videos (MP4, MOV). Max 50MB</span>
                         </div>
                     </label>
                 </div>
@@ -260,7 +260,8 @@
             </div>
 
             <div class="preview-container" id="previewContainer">
-                <img id="previewImage" class="preview-image" alt="Preview">
+                <img id="previewImage" class="preview-image" alt="Preview" style="display: none;">
+                <video id="previewVideo" class="preview-image" controls style="display: none; max-height:400px; width:100%; border-radius:8px;"></video>
             </div>
 
             <div class="form-group">
@@ -270,16 +271,17 @@
 
             <button type="submit">
                 <span class="loading" id="loading">Uploading...</span>
-                <span id="buttonText">Upload Photo</span>
+                <span id="buttonText">Upload</span>
             </button>
         </form>
     </div>
 
     <script>
-        const fileInput = document.getElementById('photo');
+        const fileInput = document.getElementById('media');
         const fileLabel = document.querySelector('.file-label');
         const previewContainer = document.getElementById('previewContainer');
         const previewImage = document.getElementById('previewImage');
+        const previewVideo = document.getElementById('previewVideo');
         const form = document.getElementById('uploadForm');
         const fileError = document.getElementById('fileError');
         const loading = document.getElementById('loading');
@@ -290,19 +292,30 @@
         fileInput.addEventListener('change', (e) => {
             const file = e.target.files[0];
             if (file) {
-                if (!file.type.startsWith('image/')) {
-                    fileError.textContent = 'Please select an image file';
+                const isImage = file.type.startsWith('image/');
+                const isVideo = file.type.startsWith('video/');
+                const maxSize = 50 * 1024 * 1024; // 50MB
+                if (!isImage && !isVideo) {
+                    fileError.textContent = 'Please select an image or video file';
                     return;
                 }
-                if (file.size > 10 * 1024 * 1024) {
-                    fileError.textContent = 'File size must be less than 10MB';
+                if (file.size > maxSize) {
+                    fileError.textContent = 'File size must be less than 50MB';
                     return;
                 }
                 fileError.textContent = '';
                 fileLabel.classList.add('has-file');
                 const reader = new FileReader();
                 reader.onload = (event) => {
-                    previewImage.src = event.target.result;
+                    if (isImage) {
+                        previewVideo.style.display = 'none';
+                        previewImage.style.display = 'block';
+                        previewImage.src = event.target.result;
+                    } else {
+                        previewImage.style.display = 'none';
+                        previewVideo.style.display = 'block';
+                        previewVideo.src = event.target.result;
+                    }
                     previewContainer.classList.add('show');
                 };
                 reader.readAsDataURL(file);
@@ -334,7 +347,7 @@
             e.preventDefault();
 
             if (!fileInput.files.length) {
-                fileError.textContent = 'Please select a photo';
+                fileError.textContent = 'Please select a file to upload';
                 return;
             }
 
