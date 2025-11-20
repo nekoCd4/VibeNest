@@ -203,9 +203,10 @@
             <button type="submit" class="btn-primary">Sign In</button>
         </form>
 
+        <% if ((typeof GOOGLE_OAUTH !== 'undefined' && GOOGLE_OAUTH) || (typeof ENTRA_OAUTH !== 'undefined' && ENTRA_OAUTH)) { %>
         <div class="divider"><span>or</span></div>
-
         <div class="oauth-buttons">
+            <% if (typeof GOOGLE_OAUTH !== 'undefined' && GOOGLE_OAUTH) { %>
             <a href="/auth/google" style="text-decoration: none;">
                 <button type="button" class="btn-oauth">
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
@@ -217,6 +218,8 @@
                     Continue with Google
                 </button>
             </a>
+            <% } %>
+            <% if (typeof ENTRA_OAUTH !== 'undefined' && ENTRA_OAUTH) { %>
             <a href="/auth/entra" style="text-decoration: none;">
                 <button type="button" class="btn-oauth">
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
@@ -228,10 +231,27 @@
                     Continue with Entra ID
                 </button>
             </a>
+            <% } %>
         </div>
+        <% if (typeof GOOGLE_OAUTH === 'undefined' || !GOOGLE_OAUTH) { %>
+            <div style="margin-top:8px;color:#777;font-size:13px;text-align:center">
+                Google sign-in is not configured.
+            </div>
+        <% } %>
+        <% if (typeof ENTRA_OAUTH === 'undefined' || !ENTRA_OAUTH) { %>
+            <div style="margin-top:8px;color:#777;font-size:13px;text-align:center">
+                Entra ID sign-in is not configured.
+            </div>
+        <% } %>
+        <% } %>
 
         <div class="links">
             Don't have an account? <a href="/register">Sign up</a>
+        <a href="/forgot-password" style="display: block; margin-top: 8px;">Forgot Password?</a>
+        
+        <a href="/support" style="display: block; margin-top: 8px;">support</a>
+
+
         </div>
     </div>
 </body>

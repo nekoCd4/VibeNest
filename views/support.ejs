@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Support — VibeNest</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap" rel="stylesheet" />
+  <style>
+    :root{
+      --bg-1: #121212;
+      --bg-2: #1c1c1c;
+      --muted: #bdbdbd;
+      --accent: #90caf9;
+      --accent-2: #ffd180;
+      --card-shadow: 0 10px 30px rgba(0,0,0,0.6);
+      --radius: 12px;
+    }
+    html,body{height:100%;margin:0;font-family: 'Roboto', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;background:linear-gradient(135deg,var(--bg-1) 0%, #1e1e2f 100%);color:#e0e0e0}
+    .container{max-width:1100px;margin:28px auto;padding:20px;box-sizing:border-box}
+    .card{background:var(--bg-2);border-radius:var(--radius);box-shadow:var(--card-shadow);padding:26px}
+    header {display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:18px}
+    header h1{margin:0;color:var(--accent);font-size:1.6rem}
+    header p{margin:0;color:var(--muted);font-size:0.95rem}
+    .grid{display:grid;grid-template-columns:1fr 380px;gap:20px}
+    form .field{margin-bottom:12px}
+    label{display:block;color:var(--muted);font-size:0.9rem;margin-bottom:6px}
+    input[type="text"], input[type="email"], select, textarea {
+      width:100%;padding:10px 12px;border-radius:8px;border:1px solid #333;background:#0f0f11;color:#eaeaea;box-sizing:border-box;font-size:0.95rem;
+    }
+    textarea{min-height:140px;resize:vertical}
+    input[type="file"]{color:var(--muted)}
+    .btn{display:inline-block;padding:10px 14px;border-radius:10px;background:var(--accent);color:#021124;font-weight:600;border:none;cursor:pointer}
+    .muted{color:var(--muted);font-size:0.9rem}
+    .sidebar .section{background:#15151a;padding:14px;border-radius:10px;margin-bottom:14px}
+    .faq dt{font-weight:600;color:#fff;margin-top:12px}
+    .faq dd{color:var(--muted);margin:6px 0 12px 0}
+    .links a{color:var(--accent);text-decoration:none}
+    .small{font-size:0.85rem;color:var(--muted)}
+    .flash {padding:10px;border-radius:8px;margin-bottom:12px}
+    .flash.success{background:rgba(144,202,249,0.12);border:1px solid rgba(144,202,249,0.18);color:var(--accent)}
+    .flash.error{background:rgba(255,120,120,0.06);border:1px solid rgba(255,120,120,0.12);color:#ff8a80}
+    footer{margin-top:18px;text-align:center;color:var(--muted);font-size:0.85rem}
+    @media (max-width:980px){.grid{grid-template-columns:1fr;}.sidebar{order:2}}
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="card">
+      <header>
+        <div>
+          <h1>VibeNest Support</h1>
+          <p class="muted">Help, docs, and direct support for VibeNest — get unstuck fast.</p>
+        </div>
+        <div class="small">
+          <div>Primary: <a href="mailto:<%= SUPPORT_EMAIL %>" class="links"><%= SUPPORT_EMAIL %></a></div>
+          <div>Legal: <a href="mailto:<%= LEGAL_EMAIL %>" class="links"><%= LEGAL_EMAIL %></a></div>
+        </div>
+      </header>
+
+      <% if (flash && flash.success) { %>
+        <div class="flash success"><%= flash.success %></div>
+      <% } %>
+      <% if (flash && flash.error) { %>
+        <div class="flash error"><%= flash.error %></div>
+      <% } %>
+<a href="/login" style="display: block; margin-top: 8px;">Back to Home</a>
+      <div class="grid">
+        <!-- LEFT: Form -->
+        <div>
+          <form id="supportForm" action="/support" method="POST" enctype="multipart/form-data" novalidate>
+            <% if (typeof csrfToken !== 'undefined') { %>
+              <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+            <% } %>
+
+            <div class="field">
+              <label for="name">Name</label>
+              <input id="name" name="name" type="text" placeholder="Your name" value="<%= user ? user.name : '' %>" required>
+            </div>
+
+            <div class="field">
+              <label for="email">Email</label>
+              <input id="email" name="email" type="email" placeholder="you@example.com" value="<%= user ? user.email : '' %>" required>
+            </div>
+
+            <div class="field">
+              <label for="category">Category</label>
+              <select id="category" name="category" required>
+                <option value="general">General question</option>
+                <option value="bug">Bug report</option>
+                <option value="billing">Billing / payments</option>
+                <option value="privacy">Privacy / data request</option>
+                <option value="feature">Feature request</option>
+                <option value="other">Other</option>
+              </select>
+            </div>
+
+            <div class="field">
+              <label for="subject">Subject</label>
+              <input id="subject" name="subject" type="text" placeholder="Short summary of your issue" required>
+            </div>
+
+            <div class="field">
+              <label for="message">Message</label>
+              <textarea id="message" name="message" placeholder="Describe the issue or question. Include steps to reproduce if reporting a bug." required></textarea>
+            </div>
+
+            <div class="field">
+              <label for="attachment">Attachment (optional)</label>
+              <input id="attachment" name="attachment" type="file" accept=".txt,.log,.png,.jpg,.jpeg,.zip">
+              <div class="small muted">Max file size controlled by server. Don't attach sensitive credentials or private keys.</div>
+            </div>
+
+            <div style="display:flex;gap:10px;align-items:center;margin-top:8px">
+              <button class="btn" type="submit">Send Request</button>
+              <div class="muted">Or email: <a href="mailto:<%= SUPPORT_EMAIL %>" class="links"><%= SUPPORT_EMAIL %></a></div>
+            </div>
+          </form>
+
+          <footer>
+            <div class="small muted">We aim to respond within 48 hours. For urgent security issues, contact the legal email above.</div>
+          </footer>
+        </div>
+
+        <!-- RIGHT: Sidebar -->
+        <aside class="sidebar">
+          <div class="section">
+            <h3 style="margin:0;color:var(--accent)">Quick Links</h3>
+            <div class="small" style="margin-top:8px">
+              <div><a href="/terms" class="links">Terms of Service</a></div>
+              <div><a href="/privacy" class="links">Privacy Policy</a></div>
+              <div><a href="/cookies" class="links">Cookie Policy</a></div>
+              <div style="margin-top:8px"><a href="/docs" class="links">Documentation</a></div>
+            </div>
+          </div>
+
+          <div class="section">
+            <h3 style="margin:0;color:var(--accent)">Frequently Asked</h3>
+            <dl class="faq">
+              <dt>How do I upload media?</dt>
+              <dd>Use the Upload page to add photos or videos. Files are stored on our servers and accessible via the Feed.</dd>
+
+              <dt>Where are my files stored?</dt>
+              <dd>Your uploads are stored on our server under your account. We do not access external drives on your behalf.</dd>
+
+              <dt>I found a bug — what to include?</dt>
+              <dd>Steps to reproduce, browser and OS, a reproducible minimal example, and any logs/screenshots are very helpful.</dd>
+
+              <dt>How do I request data deletion?</dt>
+              <dd>Choose category "privacy" in the form or email <a href="mailto:<%= LEGAL_EMAIL %>" class="links"><%= LEGAL_EMAIL %></a>.</dd>
+            </dl>
+          </div>
+
+          <div class="section">
+            <h3 style="margin:0;color:var(--accent)">Troubleshooting</h3>
+            <ul style="margin:10px 0 0 18px;color:var(--muted)">
+              <li>Clear browser cache and try an incognito window.</li>
+              <li>Try a different browser (Chrome/Edge recommended).</li>
+              <li>Check Drive permissions in your Google Account → Security → Third-party apps.</li>
+            </ul>
+          </div>
+        </aside>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // Small client-side validation + UX
+    (function(){
+      const form = document.getElementById('supportForm');
+      form.addEventListener('submit', function(e){
+        // basic HTML5 handles most validation; show a short message
+        const messageEl = document.getElementById('message');
+        if (!messageEl.value.trim()) {
+          e.preventDefault();
+          alert('Please provide details about your issue in the message field.');
+          messageEl.focus();
+          return false;
+        }
+        // disable submit to prevent double-posting
+        const btn = form.querySelector('button[type="submit"]');
+        btn.disabled = true;
+        btn.textContent = 'Sending…';
+      });
+    })();
+  </script>
+</body>
+</html>

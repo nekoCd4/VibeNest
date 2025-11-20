@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Account Verification — VibeNest</title>
+  <style>
+    body{font-family:system-ui,Arial,sans-serif;background:#f5f7fb;display:flex;align-items:center;justify-content:center;height:100vh;margin:0}
+    .card{background:#fff;padding:28px;border-radius:8px;box-shadow:0 6px 20px rgba(0,0,0,0.08);width:420px;text-align:center}
+    h1{color:#333;margin-bottom:8px}
+    p{color:#555;margin-bottom:18px}
+    a{display:inline-block;padding:10px 16px;background:#667eea;color:#fff;border-radius:6px;text-decoration:none}
+    .error{color:#c33}
+    .success{color:#2a8a2a}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <% if (success) { %>
+      <h1 class="success">Verified</h1>
+    <% } else { %>
+      <h1 class="error">Verification Failed</h1>
+    <% } %>
+    <p><%= message %></p>
+    <a href="/login">Go to Login</a>
+  </div>
+</body>
+</html>

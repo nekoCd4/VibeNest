@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Check Your Email</title>
+    <style>
+        :root {
+            --primary-color: #4a90e2;
+            --secondary-color: #ffffff;
+            --background-color: #121212;
+            --card-background: #1e1e1e;
+            --text-color: #e0e0e0;
+            --border-color: #333333;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: var(--background-color);
+            color: var(--text-color);
+            margin: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            padding: 20px;
+            box-sizing: border-box;
+        }
+
+        .check-email-container {
+            max-width: 500px;
+            width: 100%;
+            padding: 40px;
+            background-color: var(--card-background);
+            border-radius: 12px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+            text-align: center;
+            animation: fadeIn 1s ease-in-out;
+        }
+
+        h2 {
+            color: var(--primary-color);
+            margin-top: 0;
+            margin-bottom: 20px;
+            font-size: 2em;
+        }
+
+        p {
+            font-size: 1em;
+            line-height: 1.6;
+            margin-bottom: 20px;
+        }
+
+        .email-highlight {
+            color: var(--primary-color);
+            font-weight: bold;
+        }
+
+        .note {
+            font-size: 0.85em;
+            color: #999;
+        }
+
+        button {
+            padding: 12px 20px;
+            background-color: var(--primary-color);
+            color: var(--secondary-color);
+            border: none;
+            border-radius: 8px;
+            font-size: 1em;
+            cursor: pointer;
+            transition: background-color 0.3s ease;
+        }
+
+        button:hover {
+            background-color: #3870b2;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+    </style>
+</head>
+<body>
+    <div class="check-email-container">
+        <h2>Check Your Email</h2>
+        <p>
+            <% if (under13) { %>
+                We’ve sent a parental consent email to <span class="email-highlight"><%= email %></span>. 
+                Please ask your parent or guardian to open the email and complete the consent to activate your account.
+            <% } else { %>
+                A verification email has been sent to <span class="email-highlight"><%= email %></span>. 
+                Click the link in the email to activate your account.
+            <% } %>
+        </p>
+        <p class="note">
+            If you don’t see the email within a few minutes, check your spam or junk folder.
+        </p>
+        <form action="/login" method="get">
+            <button type="submit">Go to Login</button>
+        </form>
+    </div>
+</body>
+</html>

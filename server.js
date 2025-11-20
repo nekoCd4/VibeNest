@@ -10,9 +10,23 @@ import LocalStrategy from 'passport-local';
 import GoogleStrategy from 'passport-google-oauth20';
 import MicrosoftStrategy from 'passport-microsoft';
 import dotenv from 'dotenv';
-import { initializeDb, users, photos, likes, comments, videos, videoLikes, videoComments } from './db.js';
+import { initializeDb, users, photos, likes, comments, videos, videoLikes, videoComments, passwordResets, verifications } from './db.js';
+import crypto from 'crypto';
+import nodemailer from 'nodemailer';
+import Mailjet from 'node-mailjet';
+import fs from 'fs';
+// Mailjet integration (will create a Nodemailer-compatible transporter wrapper)
+let mailjetTransporter;
 
 dotenv.config();
+
+// Enforce or provide sensible defaults for critical configuration
+const SESSION_SECRET = process.env.SESSION_SECRET;
+if (!SESSION_SECRET && process.env.NODE_ENV === 'production') {
+  console.error('ERROR: SESSION_SECRET must be set in production.');
+  process.exit(1);
+}
+const sessionSecret = SESSION_SECRET || 'dev-session-secret';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -31,7 +45,7 @@ app.use('/uploads', express.static(join(__dirname, 'uploads')));
 
 // Session middleware
 app.use(session({
-  secret: process.env.SESSION_SECRET || 'your-secret-key-change-in-production',
+  secret: sessionSecret,
   resave: false,
   saveUninitialized: true,
   cookie: { secure: false, httpOnly: true, maxAge: 1000 * 60 * 60 * 24 * 7 } // 7 days
@@ -67,11 +81,25 @@ const upload = multer({
   }
 });
 
+// Support form uploader (allow broader file types, store in uploads)
+const supportUpload = multer({ dest: join(__dirname, 'uploads') });
+
 // ====================
 // View Setup
 // ====================
 app.set('views', join(__dirname, 'views'));
 app.set('view engine', 'ejs');
+
+// Make important env-driven defaults available to all views
+app.locals.SUPPORT_EMAIL = process.env.SUPPORT_EMAIL || 'akunknow3124@gmail.com';
+app.locals.LEGAL_EMAIL = process.env.LEGAL_EMAIL || 'kinville134@gmail.com';
+app.locals.BASE_URL = process.env.BASE_URL || `http://localhost:${process.env.PORT || 3000}`;
+
+// Feature flags for templatescd
+// Always show OAuth buttons (override env flags)
+app.locals.GOOGLE_OAUTH = true;
+app.locals.ENTRA_OAUTH = true;
+app.locals.NODE_ENV = process.env.NODE_ENV || 'development';
 
 // ====================
 // Passport Configuration
@@ -185,6 +213,30 @@ const isAuthenticated = (req, res, next) => {
   res.redirect('/login');
 };
 
+let smtpTransporter;
+let consoleTransporter = {
+  sendMail: async (opts) => {
+    console.log('--- Email (logged) ---');
+    console.log('To:', opts.to);
+    console.log('Subject:', opts.subject);
+    console.log('Text:', opts.text);
+    console.log('HTML:', opts.html);
+    if (opts.attachments) console.log('Attachments:', opts.attachments.map(a => a.filename || a.path));
+  }
+};
+
+// Prefer Mailjet, then SMTP, then console
+const getMailer = () => mailjetTransporter || smtpTransporter || consoleTransporter;
+const sendMail = async (opts) => {
+  const t = getMailer();
+  try {
+    return await t.sendMail(opts);
+  } catch (err) {
+    console.error('Mail send error, falling back to console:', err && err.message);
+    return consoleTransporter.sendMail(opts);
+  }
+};
+
 // ====================
 // Routes
 // ====================
@@ -208,12 +260,99 @@ app.get('/', async (req, res) => {
   }
 });
 
+// ----- Password reset request form -----
+app.get('/reset', (req, res) => {
+  res.render('reset_request', { message: req.query.message });
+});
+
+// Handle reset request (submit email)
+app.post('/reset', async (req, res) => {
+  try {
+    const { email } = req.body;
+    if (!email) return res.render('reset_request', { message: 'Please provide your email' });
+
+    const user = await users.findByEmail(email);
+    if (!user) {
+      // Do not reveal whether the email exists — show success message anyway
+      return res.render('reset_sent');
+    }
+
+    const token = crypto.randomBytes(32).toString('hex');
+    const expiresAt = new Date(Date.now() + 1000 * 60 * 60).toISOString(); // 1 hour
+    await passwordResets.create(token, user.id, expiresAt);
+
+    const base = process.env.BASE_URL || `http://localhost:${process.env.PORT || 3000}`;
+    const resetUrl = `${base}/reset/${token}`;
+
+    const mailOpts = {
+      to: user.email,
+      subject: 'VibeNest password reset',
+      text: `You requested a password reset. Visit: ${resetUrl}`,
+      html: `<p>Hi ${user.displayName || user.username},</p>
+             <p>You requested a password reset. Click the link below to set a new password (valid for 1 hour):</p>
+             <p><a href="${resetUrl}">${resetUrl}</a></p>
+             <p>If you didn't request this, ignore this email.</p>`
+    };
+
+    await sendMail(mailOpts);
+    res.render('reset_sent');
+  } catch (err) {
+    console.error(err);
+    res.render('reset_request', { message: 'Error processing reset request' });
+  }
+});
+
+// Token link -> show password entry form
+app.get('/reset/:token', async (req, res) => {
+  try {
+    const token = req.params.token;
+    const record = await passwordResets.findByToken(token);
+    if (!record) return res.render('reset_request', { message: 'Invalid or expired token' });
+    if (new Date(record.expiresAt) < new Date()) {
+      await passwordResets.deleteByToken(token);
+      return res.render('reset_request', { message: 'Token expired' });
+    }
+    res.render('reset', { token, error: null });
+  } catch (err) {
+    console.error(err);
+    res.render('reset_request', { message: 'Error validating token' });
+  }
+});
+
+// Handle new password submission
+app.post('/reset-password', async (req, res) => {
+  try {
+    const { token, newPassword } = req.body;
+    if (!token || !newPassword) return res.render('reset', { token, error: 'Missing token or password' });
+    const record = await passwordResets.findByToken(token);
+    if (!record) return res.render('reset', { token: null, error: 'Invalid or expired token' });
+    if (new Date(record.expiresAt) < new Date()) {
+      await passwordResets.deleteByToken(token);
+      return res.render('reset', { token: null, error: 'Token expired' });
+    }
+
+    // Update user's password
+    const hashed = bcrypt.hashSync(newPassword, 10);
+    await users.update(record.userId, { password: hashed });
+    await passwordResets.deleteByToken(token);
+
+    res.redirect('/login?message=Password%20updated%20successfully');
+  } catch (err) {
+    console.error(err);
+    res.render('reset', { token: req.body.token, error: 'Error updating password' });
+  }
+});
+
 // Login page
 app.get('/login', (req, res) => {
   if (req.isAuthenticated()) {
     return res.redirect('/');
   }
-  res.render('login', { message: req.query.message });
+  res.render('login', {
+    message: req.query.message,
+    GOOGLE_OAUTH: app.locals.GOOGLE_OAUTH,
+    ENTRA_OAUTH: app.locals.ENTRA_OAUTH
+  });
 });
 
 // Register page
@@ -221,7 +360,53 @@ app.get('/register', (req, res) => {
   if (req.isAuthenticated()) {
     return res.redirect('/');
   }
-  res.render('register', { message: req.query.message });
+  res.render('register', {
+    message: req.query.message,
+    GOOGLE_OAUTH: app.locals.GOOGLE_OAUTH,
+    ENTRA_OAUTH: app.locals.ENTRA_OAUTH
+  });
+});
+
+// Forgot password page (alias to reset request)
+app.get('/forgot-password', (req, res) => {
+  if (req.isAuthenticated()) return res.redirect('/');
+  res.render('forogt-password', { error: req.query.error || null });
+});
+
+// Handle forgot-password form (mirror /reset behavior)
+app.post('/forgot-password', async (req, res) => {
+  try {
+    const { email } = req.body;
+    if (!email) return res.render('forogt-password', { error: 'Please provide your email' });
+
+    const user = await users.findByEmail(email);
+    if (!user) {
+      return res.render('reset_sent');
+    }
+
+    const token = crypto.randomBytes(32).toString('hex');
+    const expiresAt = new Date(Date.now() + 1000 * 60 * 60).toISOString(); // 1 hour
+    await passwordResets.create(token, user.id, expiresAt);
+
+    const base = process.env.BASE_URL || `http://localhost:${process.env.PORT || 3000}`;
+    const resetUrl = `${base}/reset/${token}`;
+
+    const mailOpts = {
+      to: user.email,
+      subject: 'VibeNest password reset',
+      text: `You requested a password reset. Visit: ${resetUrl}`,
+      html: `<p>Hi ${user.displayName || user.username},</p>
+             <p>You requested a password reset. Click the link below to set a new password (valid for 1 hour):</p>
+             <p><a href="${resetUrl}">${resetUrl}</a></p>
+             <p>If you didn't request this, ignore this email.</p>`
+    };
+
+    await sendMail(mailOpts);
+    res.render('reset_sent');
+  } catch (err) {
+    console.error(err);
+    res.render('forogt-password', { error: 'Error processing reset request' });
+  }
 });
 
 // Handle local registration
@@ -230,15 +415,27 @@ app.post('/register', async (req, res) => {
     const { username, email, password, confirmPassword, displayName } = req.body;
 
     if (password !== confirmPassword) {
-      return res.render('register', { message: 'Passwords do not match' });
+      return res.render('register', {
+        message: 'Passwords do not match',
+        GOOGLE_OAUTH: app.locals.GOOGLE_OAUTH,
+        ENTRA_OAUTH: app.locals.ENTRA_OAUTH
+      });
     }
 
     if (await users.findByUsername(username)) {
-      return res.render('register', { message: 'Username already taken' });
+      return res.render('register', {
+        message: 'Username already taken',
+        GOOGLE_OAUTH: app.locals.GOOGLE_OAUTH,
+        ENTRA_OAUTH: app.locals.ENTRA_OAUTH
+      });
     }
 
     if (await users.findByEmail(email)) {
-      return res.render('register', { message: 'Email already registered' });
+      return res.render('register', {
+        message: 'Email already registered',
+        GOOGLE_OAUTH: app.locals.GOOGLE_OAUTH,
+        ENTRA_OAUTH: app.locals.ENTRA_OAUTH
+      });
     }
 
     const hashedPassword = bcrypt.hashSync(password, 10);
@@ -252,22 +449,73 @@ app.post('/register', async (req, res) => {
     };
 
     await users.create(user);
+    // Create an email verification token and send verification email (if mail configured)
+    try {
+      const token = crypto.randomBytes(32).toString('hex');
+      const expiresAt = new Date(Date.now() + 1000 * 60 * 60 * 24).toISOString(); // 24 hours
+      await verifications.create(token, user.id, expiresAt);
+      const base = app.locals.BASE_URL;
+      const verifyUrl = `${base}/verify/${token}`;
+      const mailOpts = {
+        to: user.email,
+        subject: 'Verify your VibeNest account',
+        text: `Please verify your VibeNest account by visiting: ${verifyUrl}`,
+        html: `<p>Hi ${user.displayName || user.username},</p>
+               <p>Welcome to VibeNest! Click the link below to verify your email address (valid for 24 hours):</p>
+               <p><a href="${verifyUrl}">${verifyUrl}</a></p>
+               <p>If you didn't create an account, ignore this email.</p>`
+      };
+      await sendMail(mailOpts);
+    } catch (e) {
+      console.error('Error sending verification email:', e && e.message);
+    }
+
     req.logIn(user, (err) => {
       if (err) return res.redirect('/register');
       res.redirect('/');
     });
   } catch (err) {
     console.error(err);
-    res.render('register', { message: 'Registration error' });
+    res.render('register', {
+      message: 'Registration error',
+      GOOGLE_OAUTH: app.locals.GOOGLE_OAUTH,
+      ENTRA_OAUTH: app.locals.ENTRA_OAUTH
+    });
   }
 });
 
 // Handle local login
-app.post('/login', passport.authenticate('local', {
-  successRedirect: '/',
-  failureRedirect: '/login?message=Invalid%20credentials',
-  failureMessage: true
-}));
+app.post('/login', (req, res, next) => {
+  passport.authenticate('local', async (err, user, info) => {
+    if (err) return next(err);
+    if (!user) {
+      return res.render('login', {
+        message: 'Invalid credentials',
+        GOOGLE_OAUTH: app.locals.GOOGLE_OAUTH,
+        ENTRA_OAUTH: app.locals.ENTRA_OAUTH
+      });
+    }
+    // Check if user is verified
+    if (!user.verified) {
+      req.logOut(() => {});
+      return res.render('login', {
+        message: 'Please verify your email before logging in',
+        GOOGLE_OAUTH: app.locals.GOOGLE_OAUTH,
+        ENTRA_OAUTH: app.locals.ENTRA_OAUTH
+      });
+    }
+    req.logIn(user, (err) => {
+      if (err) {
+        return res.render('login', {
+          message: 'Login error',
+          GOOGLE_OAUTH: app.locals.GOOGLE_OAUTH,
+          ENTRA_OAUTH: app.locals.ENTRA_OAUTH
+        });
+      }
+      return res.redirect('/');
+    });
+  })(req, res, next);
+});
 
 // Google OAuth
 app.get('/auth/google', passport.authenticate('google', { scope: ['profile', 'email'] }));
@@ -291,66 +539,114 @@ app.get('/logout', (req, res) => {
   });
 });
 
+// Support page
+app.get('/support', (req, res) => {
+  res.render('support', { user: req.user, flash: null });
+});
+
+// Handle support form (accept an optional attachment)
+app.post('/support', supportUpload.single('attachment'), async (req, res) => {
+  try {
+    const { name, email, category, subject, message } = req.body;
+    const attachment = req.file;
+
+    const mailOpts = {
+      to: process.env.SUPPORT_EMAIL || 'akunknow3124@gmail.com',
+      subject: `[Support] ${subject} (${category})`,
+      text: `From: ${name} <${email}>\n\n${message}`,
+      html: `<p><strong>From:</strong> ${name} &lt;${email}&gt;</p><p><strong>Category:</strong> ${category}</p><p>${message.replace(/\n/g, '<br/>')}</p>`,
+    };
+
+    if (attachment && attachment.path) {
+      mailOpts.attachments = [{ filename: attachment.originalname || attachment.filename, path: attachment.path }];
+    }
+
+    // Support form should use Mailjet, then SMTP, then console.
+    try {
+      await sendMail(mailOpts);
+    } catch (e) {
+      console.error('Error sending support email:', e);
+      console.log('Support request (logged):', mailOpts);
+    }
+
+    res.render('support', { user: req.user, flash: { success: 'Support request sent — we will respond within 48 hours.' } });
+  } catch (err) {
+    console.error(err);
+    res.render('support', { user: req.user, flash: { error: 'Failed to submit support request' } });
+  }
+});
+
+// Resend verification page
+app.get('/resend-verification', (req, res) => {
+  res.render('resend-verifacation', { message: req.query.message || null });
+});
+
+// Handle resend verification
+app.post('/resend-verification', async (req, res) => {
+  try {
+    const { email } = req.body;
+    // For privacy, always render check-email even if user not found
+    const user = email ? await users.findByEmail(email) : null;
+    if (user) {
+      // create a new verification token and send link
+      const token = crypto.randomBytes(32).toString('hex');
+      const expiresAt = new Date(Date.now() + 1000 * 60 * 60 * 24).toISOString(); // 24 hours
+      await verifications.create(token, user.id, expiresAt);
+      const base = app.locals.BASE_URL;
+      const verifyUrl = `${base}/verify/${token}`;
+      await sendMail({
+        to: user.email,
+        subject: 'Verify your VibeNest account',
+        text: `Verify your VibeNest account: ${verifyUrl}`,
+        html: `<p>Hi ${user.displayName || user.username},</p><p>Click <a href="${verifyUrl}">here</a> to verify your account.</p>`
+      });
+    }
+
+    res.render('check-email', { email: email || '', under13: false });
+  } catch (err) {
+    console.error(err);
+    res.render('resend-verifacation', { message: 'Error resending verification' });
+  }
+});
+
 // Settings page
 app.get('/settings', isAuthenticated, (req, res) => {
   res.render('settings', { user: req.user });
 });
 
-// Update settings
-app.post('/api/settings', isAuthenticated, async (req, res) => {
+// Support page
+app.get('/support', (req, res) => {
+  res.render('support', { user: req.user });
+});
+
+// Check email page (generic)
+app.get('/check-email', (req, res) => {
+  res.render('check-email', { email: req.query.email || '', under13: req.query.under13 === '1' });
+});
+
+// Verify email token route
+app.get('/verify/:token', async (req, res) => {
   try {
-    const { displayName, bio } = req.body;
-    await users.update(req.user.id, { displayName, bio });
-    req.user.displayName = displayName;
-    req.user.bio = bio;
-    res.json({ success: true });
+    const token = req.params.token;
+    const record = await verifications.findByToken(token);
+    if (!record) return res.render('verify', { success: false, message: 'Invalid or expired verification token.' });
+    if (new Date(record.expiresAt) < new Date()) {
+      await verifications.deleteByToken(token);
+      return res.render('verify', { success: false, message: 'Verification token expired.' });
+    }
+    // mark user verified
+    await users.update(record.userId, { verified: 1 });
+    await verifications.deleteByToken(token);
+    res.render('verify', { success: true, message: 'Your email has been verified. You can now use your account.' });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: err.message });
+    res.render('verify', { success: false, message: 'Error processing verification.' });
   }
 });
 
-// Upload page
-app.get('/upload', isAuthenticated, (req, res) => {
-  res.render('upload', { user: req.user });
-});
+// (Resend verification handled earlier) — this block removed to avoid duplicate handlers
 
-// Handle photo/video upload
-app.post('/api/upload', isAuthenticated, upload.single('media'), async (req, res) => {
-  try {
-    if (!req.file) {
-      return res.status(400).json({ error: 'No file uploaded' });
-    }
-
-    const isImage = req.file.mimetype.startsWith('image/');
-    const isVideo = req.file.mimetype.startsWith('video/');
-
-    if (isImage) {
-      const photo = {
-        id: uuidv4(),
-        userId: req.user.id,
-        filename: req.file.filename,
-        caption: req.body.caption || ''
-      };
-      await photos.create(photo);
-      res.json({ success: true, type: 'photo', media: photo });
-    } else if (isVideo) {
-      const video = {
-        id: uuidv4(),
-        userId: req.user.id,
-        filename: req.file.filename,
-        caption: req.body.caption || ''
-      };
-      await videos.create(video);
-      res.json({ success: true, type: 'video', media: video });
-    } else {
-      return res.status(400).json({ error: 'Invalid file type' });
-    }
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: err.message });
-  }
-});
+// ...existing code...
 
 // Get all photos
 app.get('/api/photos', async (req, res) => {
@@ -536,8 +832,8 @@ app.get('/api/photos/:photoId/comments', async (req, res) => {
 // Get comments for a video
 app.get('/api/videos/:videoId/comments', async (req, res) => {
   try {
-    const videoComments = await videoComments.getByVideo(req.params.videoId);
-    res.json({ comments: videoComments });
+    const vComments = await videoComments.getByVideo(req.params.videoId);
+    res.json({ comments: vComments });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: err.message });
@@ -585,7 +881,7 @@ app.delete('/api/videos/:videoId', isAuthenticated, async (req, res) => {
 // Delete a comment (only owner)
 app.delete('/api/comments/:commentId', isAuthenticated, async (req, res) => {
   try {
-    const comment = await comments.getByPhoto(req.params.commentId);
+    const comment = await comments.findById(req.params.commentId);
     if (!comment) {
       return res.status(404).json({ error: 'Comment not found' });
     }
@@ -604,7 +900,7 @@ app.delete('/api/comments/:commentId', isAuthenticated, async (req, res) => {
 // Delete a video comment (only owner)
 app.delete('/api/video-comments/:videoCommentId', isAuthenticated, async (req, res) => {
   try {
-    const comment = await videoComments.getByVideo(req.params.videoCommentId);
+    const comment = await videoComments.findById(req.params.videoCommentId);
     if (!comment) {
       return res.status(404).json({ error: 'Comment not found' });
     }
@@ -628,11 +924,131 @@ app.use((err, req, res, next) => {
   res.status(500).render('error', { error: err.message || 'Something went wrong' });
 });
 
+// Auto-logout unverified users on every request
+app.use((req, res, next) => {
+  if (req.isAuthenticated() && req.user && !req.user.verified) {
+    req.logOut(() => {});
+    return res.redirect('/login?message=Please%20verify%20your%20email%20before%20using%20your%20account');
+  }
+  next();
+});
+
 // ====================
 // Start Server
 // ====================
 (async () => {
   await initializeDb();
+  // Setup mail transporter (if SMTP env vars provided). Otherwise fall back to console.
+  
+  // Configure Mailjet (API client preferred). Support both MAILJET_USER/PASS and MAILJET_API_KEY/SECRET.
+  const mjUser = process.env.MAILJET_USER || process.env.MAILJET_API_KEY;
+  const mjPass = process.env.MAILJET_PASS || process.env.MAILJET_API_SECRET;
+  if (mjUser && mjPass) {
+    const mailjet = Mailjet.apiConnect(mjUser, mjPass);
+    // Provide a Nodemailer-compatible `sendMail(opts)` wrapper so existing code can call sendMail()
+    mailjetTransporter = {
+      sendMail: async (opts) => {
+        const fromEmail = process.env.MAILJET_SENDER_EMAIL || process.env.SUPPORT_EMAIL || 'no-reply@example.com';
+        const fromName = process.env.MAILJET_SENDER_NAME || 'VibeNest';
+
+        // Normalize recipients into Mailjet's expected array of { Email, Name }
+        const toArr = [];
+        try {
+          if (!opts.to) {
+            throw new Error('No recipient specified');
+          }
+          if (typeof opts.to === 'string') {
+            // handle formats like 'Name <email@domain>' or just 'email@domain'
+            const m = opts.to.match(/^(.*)<([^>]+)>$/);
+            if (m) {
+              toArr.push({ Email: m[2].trim(), Name: m[1].trim() });
+            } else {
+              toArr.push({ Email: opts.to.trim() });
+            }
+          } else if (Array.isArray(opts.to)) {
+            for (const t of opts.to) {
+              if (typeof t === 'string') {
+                const m = t.match(/^(.*)<([^>]+)>$/);
+                if (m) toArr.push({ Email: m[2].trim(), Name: m[1].trim() });
+                else toArr.push({ Email: t.trim() });
+              } else if (t && t.address) {
+                toArr.push({ Email: t.address, Name: t.name || undefined });
+              }
+            }
+          } else if (opts.to && opts.to.address) {
+            toArr.push({ Email: opts.to.address, Name: opts.to.name || undefined });
+          }
+        } catch (e) {
+          return Promise.reject(e);
+        }
+
+        const message = {
+          From: { Email: fromEmail, Name: fromName },
+          To: toArr,
+          Subject: opts.subject || opts.subject || '(no subject)',
+          TextPart: opts.text || undefined,
+          HTMLPart: opts.html || undefined,
+        };
+
+        // Attachments: Mailjet v3.1 expects Base64 content with Filename and ContentType
+        if (opts.attachments && Array.isArray(opts.attachments) && opts.attachments.length) {
+          message.Attachments = [];
+          for (const a of opts.attachments) {
+            try {
+              let filename = a.filename || a.path || (a.filename && a.filename.toString()) || 'attachment';
+              let contentType = a.contentType || a.mimetype || 'application/octet-stream';
+              let dataBuffer = null;
+              if (a.content) {
+                // nodemailer allows Buffer in `content`
+                dataBuffer = Buffer.isBuffer(a.content) ? a.content : Buffer.from(a.content);
+              } else if (a.path) {
+                dataBuffer = fs.readFileSync(a.path);
+              }
+              if (dataBuffer) {
+                message.Attachments.push({
+                  ContentType: contentType,
+                  Filename: filename,
+                  Base64Content: dataBuffer.toString('base64')
+                });
+              }
+            } catch (attachErr) {
+              // If an attachment fails, log and continue without it
+              console.error('Mailjet attachment error:', attachErr && attachErr.message);
+            }
+          }
+        }
+
+        const payload = { Messages: [message] };
+        const res = await mailjet.post('send', { version: 'v3.1' }).request(payload);
+        return res;
+      }
+    };
+  }
+
+  // Configure SMTP transporter (fallback)
+  if (process.env.SMTP_HOST && process.env.SMTP_USER) {
+    smtpTransporter = nodemailer.createTransport({
+      host: process.env.SMTP_HOST,
+      port: parseInt(process.env.SMTP_PORT || '587', 10),
+      secure: process.env.SMTP_SECURE === 'true',
+      auth: {
+        user: process.env.SMTP_USER,
+        pass: process.env.SMTP_PASS
+      }
+    });
+  }
+
+  // Console fallback transporter
+  consoleTransporter = {
+    sendMail: async (opts) => {
+      console.log('--- Email (logged) ---');
+      console.log('To:', opts.to);
+      console.log('Subject:', opts.subject);
+      console.log('Text:', opts.text);
+      console.log('HTML:', opts.html);
+      if (opts.attachments) console.log('Attachments:', opts.attachments.map(a => a.filename || a.path));
+    }
+  };
   const PORT = process.env.PORT || 3000;
   app.listen(PORT, () => {
     console.log(`✨ VibeNest running on http://localhost:${PORT}`);

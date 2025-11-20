@@ -122,12 +122,45 @@ export async function initializeDb() {
     `
   ];
 
+  // Add password reset table
+  createTables.push(`
+    CREATE TABLE IF NOT EXISTS password_resets (
+      token TEXT PRIMARY KEY,
+      userId TEXT NOT NULL,
+      expiresAt DATETIME NOT NULL,
+      createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (userId) REFERENCES users(id) ON DELETE CASCADE
+    )
+  `);
+
   for (const sql of createTables) {
     try {
       await dbRun(sql);
     } catch (err) {
       console.error('Error creating table:', err);
     }
+  }
+
+  // Ensure users table has a `verified` column (0/1). If it already exists, ignore error.
+  try {
+    await dbRun('ALTER TABLE users ADD COLUMN verified INTEGER DEFAULT 0');
+  } catch (e) {
+    // ignore - column likely exists
+  }
+
+  // Create verifications table for account verification tokens
+  try {
+    await dbRun(`
+      CREATE TABLE IF NOT EXISTS verifications (
+        token TEXT PRIMARY KEY,
+        userId TEXT NOT NULL,
+        expiresAt DATETIME NOT NULL,
+        createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (userId) REFERENCES users(id) ON DELETE CASCADE
+      )
+    `);
+  } catch (err) {
+    console.error('Error creating verifications table:', err);
   }
 }
 
@@ -248,6 +281,11 @@ export const comments = {
     `, [photoId]);
   },
 
+  // Find comment by id
+  findById: async (id) => {
+    return await dbGet('SELECT * FROM comments WHERE id = ?', [id]);
+  },
+
   delete: async (id) => {
     await dbRun('DELETE FROM comments WHERE id = ?', [id]);
   },
@@ -339,7 +377,68 @@ export const videoComments = {
     `, [videoId]);
   },
 
+  // Find video comment by id
+  findById: async (id) => {
+    return await dbGet('SELECT * FROM video_comments WHERE id = ?', [id]);
+  },
+
   delete: async (id) => {
     await dbRun('DELETE FROM video_comments WHERE id = ?', [id]);
   },
+};
+
+// Password reset operations
+export const passwordResets = {
+  create: async (token, userId, expiresAt) => {
+    const sql = `
+      INSERT INTO password_resets (token, userId, expiresAt)
+      VALUES (?, ?, ?)
+    `;
+    await dbRun(sql, [token, userId, expiresAt]);
+  },
+
+  findByToken: async (token) => {
+    return await dbGet(`
+      SELECT pr.*, u.email, u.username, u.displayName
+      FROM password_resets pr
+      JOIN users u ON pr.userId = u.id
+      WHERE pr.token = ?
+    `, [token]);
+  },
+
+  deleteByToken: async (token) => {
+    await dbRun('DELETE FROM password_resets WHERE token = ?', [token]);
+  },
+
+  deleteByUserId: async (userId) => {
+    await dbRun('DELETE FROM password_resets WHERE userId = ?', [userId]);
+  }
+};
+
+// Verification tokens (for email verification)
+export const verifications = {
+  create: async (token, userId, expiresAt) => {
+    const sql = `
+      INSERT INTO verifications (token, userId, expiresAt)
+      VALUES (?, ?, ?)
+    `;
+    await dbRun(sql, [token, userId, expiresAt]);
+  },
+
+  findByToken: async (token) => {
+    return await dbGet(`
+      SELECT v.*, u.email, u.username, u.displayName
+      FROM verifications v
+      JOIN users u ON v.userId = u.id
+      WHERE v.token = ?
+    `, [token]);
+  },
+
+  deleteByToken: async (token) => {
+    await dbRun('DELETE FROM verifications WHERE token = ?', [token]);
+  },
+
+  deleteByUserId: async (userId) => {
+    await dbRun('DELETE FROM verifications WHERE userId = ?', [userId]);
+  }
 };
