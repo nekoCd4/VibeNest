@@ -20,6 +20,12 @@ let mailjetTransporter;
 
 dotenv.config();
 
+// Require a canonical public base URL — do not fall back to localhost in Codespaces
+if (!process.env.BASE_URL && !process.env.APP_URL) {
+  console.error('ERROR: BASE_URL or APP_URL must be set in your .env (no localhost fallbacks).');
+  process.exit(1);
+}
+
 // Enforce or provide sensible defaults for critical configuration
 const SESSION_SECRET = process.env.SESSION_SECRET;
 if (!SESSION_SECRET && process.env.NODE_ENV === 'production') {
@@ -93,7 +99,7 @@ app.set('view engine', 'ejs');
 // Make important env-driven defaults available to all views
 app.locals.SUPPORT_EMAIL = process.env.SUPPORT_EMAIL || 'akunknow3124@gmail.com';
 app.locals.LEGAL_EMAIL = process.env.LEGAL_EMAIL || 'kinville134@gmail.com';
-app.locals.BASE_URL = process.env.BASE_URL || `http://localhost:${process.env.PORT || 3000}`;
+app.locals.BASE_URL = process.env.BASE_URL || process.env.APP_URL;
 
 // Feature flags for templatescd
 // Always show OAuth buttons (override env flags)
@@ -144,9 +150,14 @@ passport.use(new GoogleStrategy.Strategy(
           email: profile.emails[0].value,
           displayName: profile.displayName,
           profilePic: profile.photos[0]?.value,
-          authProvider: 'google'
+          authProvider: 'google',
+          verified: 1 // OAuth users are trusted — mark verified
         };
         await users.create(user);
+      } else if (!user.verified) {
+        // Ensure existing OAuth users are marked verified
+        await users.update(user.id, { verified: 1 });
+        user.verified = 1;
       }
       return done(null, user);
     } catch (err) {
@@ -178,9 +189,13 @@ passport.use(new MicrosoftStrategy.Strategy(
           username: profile.displayName.replace(/\s+/g, '').toLowerCase() + uuidv4().slice(0, 4),
           email: email,
           displayName: profile.displayName,
-          authProvider: 'entra'
+          authProvider: 'entra',
+          verified: 1 // OAuth users are trusted — mark verified
         };
         await users.create(user);
+      } else if (!user.verified) {
+        await users.update(user.id, { verified: 1 });
+        user.verified = 1;
       }
       return done(null, user);
     } catch (err) {
@@ -281,7 +296,7 @@ app.post('/reset', async (req, res) => {
     const expiresAt = new Date(Date.now() + 1000 * 60 * 60).toISOString(); // 1 hour
     await passwordResets.create(token, user.id, expiresAt);
 
-    const base = process.env.BASE_URL || `http://localhost:${process.env.PORT || 3000}`;
+    const base = process.env.BASE_URL || process.env.APP_URL || `http://localhost:${process.env.PORT || 3000}`;
     const resetUrl = `${base}/reset/${token}`;
 
     const mailOpts = {
@@ -388,7 +403,7 @@ app.post('/forgot-password', async (req, res) => {
     const expiresAt = new Date(Date.now() + 1000 * 60 * 60).toISOString(); // 1 hour
     await passwordResets.create(token, user.id, expiresAt);
 
-    const base = process.env.BASE_URL || `http://localhost:${process.env.PORT || 3000}`;
+    const base = process.env.BASE_URL || process.env.APP_URL || `http://localhost:${process.env.PORT || 3000}`;
     const resetUrl = `${base}/reset/${token}`;
 
     const mailOpts = {
@@ -606,6 +621,45 @@ app.post('/resend-verification', async (req, res) => {
   } catch (err) {
     console.error(err);
     res.render('resend-verifacation', { message: 'Error resending verification' });
+  }
+});
+
+// --- Admin: Resend verification (admin-only UI) ---
+app.get('/admin/resend-verification', isAuthenticated, (req, res) => {
+  const user = req.user;
+  if (!user || !user.isAdmin) return res.status(403).send('Forbidden');
+  res.render('resend-verification-admin', { user, message: null });
+});
+
+app.post('/admin/resend-verification', isAuthenticated, async (req, res) => {
+  const user = req.user;
+  if (!user || !user.isAdmin) return res.status(403).send('Forbidden');
+
+  try {
+    const { email } = req.body;
+    if (!email) return res.render('resend-verification-admin', { user, message: 'Email required' });
+
+    const target = await users.findByEmail(email);
+    if (!target) return res.render('resend-verification-admin', { user, message: 'User not found' });
+
+    const token = crypto.randomBytes(32).toString('hex');
+    const expiresAt = new Date(Date.now() + 1000 * 60 * 60 * 24).toISOString(); // 24 hours
+    await verifications.create(token, target.id, expiresAt);
+
+    const base = app.locals.BASE_URL;
+    const verifyUrl = `${base.replace(/\/$/, '')}/verify/${token}`;
+
+    await sendMail({
+      to: target.email,
+      subject: 'Verify your VibeNest account',
+      text: `Please verify your VibeNest account by visiting: ${verifyUrl}`,
+      html: `<p>Hi ${target.displayName || target.username},</p><p>Please verify your VibeNest account by clicking the link below (valid for 24 hours):</p><p><a href="${verifyUrl}">${verifyUrl}</a></p>`
+    });
+
+    res.render('resend-verification-admin', { user, message: `Verification sent to ${target.email}` });
+  } catch (err) {
+    console.error('Admin resend error:', err);
+    res.render('resend-verification-admin', { user, message: 'Error sending verification' });
   }
 });
 

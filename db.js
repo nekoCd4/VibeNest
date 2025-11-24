@@ -1,5 +1,6 @@
 import sqlite3 from 'sqlite3';
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -146,6 +147,30 @@ export async function initializeDb() {
     await dbRun('ALTER TABLE users ADD COLUMN verified INTEGER DEFAULT 0');
   } catch (e) {
     // ignore - column likely exists
+  }
+
+  // Ensure additional columns used by Webterm helpers exist (backwards-compatible)
+  try {
+    // Query existing columns
+    const cols = await dbAll("PRAGMA table_info(users)");
+    const has = (name) => cols.some(c => c.name === name);
+    const add = async (col, type, def = '') => {
+      if (!has(col)) await dbRun(`ALTER TABLE users ADD COLUMN ${col} ${type} ${def}`);
+    };
+    await add('uid', 'TEXT', '');
+    await add('firstName', 'TEXT', '');
+    await add('lastName', 'TEXT', '');
+    await add('status', 'TEXT', "DEFAULT 'active'");
+    await add('verificationToken', 'TEXT', '');
+    await add('is2FAEnabled', "TEXT", "DEFAULT 'none'");
+    await add('twoFactorSecret', 'TEXT', '');
+    await add('webauthnCredentials', 'TEXT', '');
+    await add('isAdmin', 'INTEGER', 'DEFAULT 0');
+    await add('google_drive_folder_id', 'TEXT', '');
+    await add('google_tokens', 'TEXT', '');
+  } catch (e) {
+    // If PRAGMA or ALTER fails, ignore to keep compatibility
+    console.warn('DB migration check warning:', e && e.message);
   }
 
   // Create verifications table for account verification tokens
@@ -442,3 +467,57 @@ export const verifications = {
     await dbRun('DELETE FROM verifications WHERE userId = ?', [userId]);
   }
 };
+
+// --- Additional helpers borrowed from Webterm db helpers ---
+export async function findUser(username) {
+  return await dbGet('SELECT * FROM users WHERE username = ?', [username]);
+}
+
+export async function findUserByUid(uid) {
+  return await dbGet('SELECT * FROM users WHERE uid = ?', [uid]);
+}
+
+export async function saveGoogleTokens(uid, tokens) {
+  try {
+    const existing = await getGoogleTokens(uid);
+    const merged = {
+      ...(existing || {}),
+      ...(tokens || {}),
+      refresh_token: tokens?.refresh_token || existing?.refresh_token || null,
+      updated_at: Date.now(),
+    };
+    await dbRun('UPDATE users SET google_tokens = ? WHERE uid = ?', [JSON.stringify(merged), uid]);
+    return merged;
+  } catch (err) {
+    console.error('Failed to save Google tokens:', err && err.message);
+    throw err;
+  }
+}
+
+export async function getGoogleTokens(uid) {
+  const row = await dbGet('SELECT google_tokens FROM users WHERE uid = ?', [uid]);
+  return row?.google_tokens ? JSON.parse(row.google_tokens) : null;
+}
+
+export async function setPublicIP(username, ip) {
+  await dbRun('UPDATE users SET public_ip = ? WHERE username = ?', [ip, username]);
+}
+
+export async function setPrivateIP(username, ip) {
+  await dbRun('UPDATE users SET private_ip = ? WHERE username = ?', [ip, username]);
+}
+
+export async function setAdmin(username) {
+  await dbRun('UPDATE users SET isAdmin = 1 WHERE username = ?', [username]);
+}
+
+export async function saveAdminSettings(username, is2FAEnabled, twoFactorSecret) {
+  try {
+    const user = await dbGet('SELECT * FROM users WHERE username = ? AND isAdmin = 1', [username]);
+    if (user) {
+      await dbRun('UPDATE users SET is2FAEnabled = ?, twoFactorSecret = ? WHERE username = ?', [is2FAEnabled, twoFactorSecret, username]);
+    }
+  } catch (err) {
+    console.error(`Failed to save admin settings for ${username}:`, err && err.message);
+  }
+}

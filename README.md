@@ -33,6 +33,8 @@ See `.env.example` for all recommended variables. Important ones:
 - `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` — optional Google OAuth.
 - `ENTRA_CLIENT_ID`, `ENTRA_CLIENT_SECRET` — optional Microsoft/Entra OAuth.
 
+- `BASE_URL` — REQUIRED in Codespaces/production: set to your public URL (e.g. `https://<your-codespace>.app.github.dev`). The app will refuse to start without `BASE_URL` or `APP_URL` to avoid generating localhost links.
+
 ## Features implemented
 - Local registration/login
 - Password reset via email (token)
@@ -48,6 +50,10 @@ See `.env.example` for all recommended variables. Important ones:
   - `MAILJET_API_KEY=your-mailjet-api-key`
   - `MAILJET_API_SECRET=your-mailjet-api-secret`
   - Optionally: `MAILJET_SMTP_HOST`, `MAILJET_SMTP_PORT`, `MAILJET_SMTP_SECURE`
+
+Admin tools
+
+- There is an admin-only UI to re-send verification emails at `/admin/resend-verification`. The admin user must have `isAdmin` set in the database. Use that page to reissue verification links for specific users.
 
 ## Security notes
 - **Mailjet and its dependencies may be affected by SSRF vulnerabilities.** See: https://github.com/advisories/GHSA-2p57-rm9w-gvfp

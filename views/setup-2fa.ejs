@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Setup 2FA</title>
+  <style>
+    :root {
+      --primary-color: #4a90e2;
+      --secondary-color: #ffffff;
+      --background-color: #121212;
+      --card-background: #1e1e1e;
+      --text-color: #e0e0e0;
+      --border-color: #333333;
+      --focus-glow: 0 0 10px rgba(74, 144, 226, 0.5);
+      --error-color: #e74c3c;
+    }
+
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background-color: var(--background-color);
+      color: var(--text-color);
+      margin: 0;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      padding: 20px;
+      box-sizing: border-box;
+    }
+
+    .container {
+      max-width: 500px;
+      width: 100%;
+      padding: 40px;
+      background-color: var(--card-background);
+      border-radius: 12px;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+      text-align: center;
+    }
+
+    h2 {
+      color: var(--secondary-color);
+      margin-bottom: 10px;
+      font-size: 1.8em;
+    }
+
+    p {
+      font-size: 0.9em;
+      color: #aaa;
+      line-height: 1.6;
+    }
+
+    .tabs {
+      display: flex;
+      margin: 20px 0;
+      border-bottom: 1px solid var(--border-color);
+    }
+
+    .tab-btn {
+      flex-grow: 1;
+      padding: 15px;
+      font-size: 1em;
+      font-weight: 600;
+      color: #888;
+      background: none;
+      border: none;
+      cursor: pointer;
+      transition: color 0.3s ease;
+    }
+
+    .tab-btn.active {
+      color: var(--primary-color);
+      border-bottom: 2px solid var(--primary-color);
+      margin-bottom: -1px;
+    }
+
+    .tab-content {
+      display: none;
+    }
+
+    .tab-content.active {
+      display: block;
+    }
+
+    .qr-container {
+      background-color: var(--secondary-color);
+      padding: 10px;
+      border-radius: 8px;
+      display: inline-block;
+      margin-bottom: 20px;
+    }
+
+    .qr-container img {
+      display: block;
+      max-width: 100%;
+      height: auto;
+    }
+
+    .secret-key {
+      background-color: #2a2a2a;
+      padding: 10px;
+      border-radius: 8px;
+      font-family: monospace;
+      font-size: 1.1em;
+      margin-bottom: 20px;
+      word-break: break-all;
+    }
+
+    .form-group {
+      margin-bottom: 20px;
+      text-align: left;
+    }
+
+    label {
+      display: block;
+      margin-bottom: 8px;
+      font-size: 0.9em;
+      color: var(--text-color);
+    }
+
+    input[type="text"], input[type="email"] {
+      width: 100%;
+      padding: 12px 15px;
+      background-color: transparent;
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      color: var(--secondary-color);
+      font-size: 1em;
+      transition: border-color 0.3s ease, box-shadow 0.3s ease;
+      box-sizing: border-box;
+    }
+
+    input[type="text"]:focus, input[type="email"]:focus {
+      outline: none;
+      border-color: var(--primary-color);
+      box-shadow: var(--focus-glow);
+    }
+
+    button {
+      width: 100%;
+      padding: 15px;
+      background-color: var(--primary-color);
+      color: var(--secondary-color);
+      font-size: 1.1em;
+      font-weight: 600;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: background-color 0.3s ease, transform 0.2s ease, box-shadow 0.3s ease;
+    }
+
+    button:hover {
+      background-color: #3870b2;
+      transform: translateY(-2px);
+      box-shadow: 0 6px 15px rgba(0, 0, 0, 0.2);
+    }
+
+    .error-message {
+      color: var(--error-color);
+      font-size: 0.9em;
+      margin: 10px 0;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h2>Setup Two-Factor Authentication</h2>
+    <p>Choose your preferred method of two-factor authentication.</p>
+
+    <% if (error) { %>
+      <div class="error-message"><%= error %></div>
+    <% } %>
+
+    <div class="tabs">
+      <button class="tab-btn active" data-tab="app">Authenticator App</button>
+      <button class="tab-btn" data-tab="email">Email</button>
+    </div>
+
+    <!-- Authenticator App -->
+    <div id="app-content" class="tab-content active">
+      <p>Scan the QR code below with an authenticator app (Google Authenticator, Authy, etc.):</p>
+      <div class="qr-container">
+        <% if (qrCodeImage) { %>
+          <img src="<%= qrCodeImage %>" alt="QR Code" />
+        <% } else { %>
+          <p>No QR code available. Please try again.</p>
+        <% } %>
+      </div>
+      <p>Or manually enter this secret key:</p>
+      <div class="secret-key"><%= secret %></div>
+
+      <form action="/setup-2fa" method="POST">
+        <div class="form-group">
+          <label for="token">Authenticator Code</label>
+          <input type="text" id="token" name="token" required maxlength="6" autocomplete="off" />
+        </div>
+        <button type="submit">Enable 2FA</button>
+      </form>
+    </div>
+
+    <!-- Email 2FA -->
+    <div id="email-content" class="tab-content">
+      <p>Receive a unique 6-digit code via email every time you log in.</p>
+      <form action="/enable-email-2fa" method="POST">
+        <div class="form-group">
+          <label for="email">Confirm your email</label>
+          <input 
+            type="email" 
+            id="email" 
+            name="email" 
+            value="<%= user.email %>" 
+            required 
+            autocomplete="off"
+          />
+        </div>
+        <button type="submit">Enable Email 2FA</button>
+      </form>
+    </div>
+  </div>
+
+  <script>
+    document.addEventListener('DOMContentLoaded', () => {
+      const tabs = document.querySelectorAll('.tab-btn');
+      const contents = document.querySelectorAll('.tab-content');
+
+      tabs.forEach(tab => {
+        tab.addEventListener('click', () => {
+          tabs.forEach(t => t.classList.remove('active'));
+          contents.forEach(c => c.classList.remove('active'));
+          tab.classList.add('active');
+          document.getElementById(tab.dataset.tab + '-content').classList.add('active');
+        });
+      });
+    });
+  </script>
+</body>
+</html>
