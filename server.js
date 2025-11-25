@@ -9,8 +9,10 @@ import passport from 'passport';
 import LocalStrategy from 'passport-local';
 import GoogleStrategy from 'passport-google-oauth20';
 import MicrosoftStrategy from 'passport-microsoft';
+import { authenticator } from 'otplib';
+import QRCode from 'qrcode';
 import dotenv from 'dotenv';
-import { initializeDb, users, photos, likes, comments, videos, videoLikes, videoComments, passwordResets, verifications } from './db.js';
+import { initializeDb, users, photos, likes, comments, videos, videoLikes, videoComments, passwordResets, verifications, backupCodes } from './db.js';
 import crypto from 'crypto';
 import nodemailer from 'nodemailer';
 import Mailjet from 'node-mailjet';
@@ -60,6 +62,17 @@ app.use(session({
 // Passport initialization
 app.use(passport.initialize());
 app.use(passport.session());
+
+// Make the current user available in all templates (prevents undefined 'user' errors)
+app.use((req, res, next) => {
+  res.locals.user = req.user || null;
+  // Ensure auth flags are visible too
+  res.locals.GOOGLE_OAUTH = app.locals.GOOGLE_OAUTH;
+  res.locals.ENTRA_OAUTH = app.locals.ENTRA_OAUTH;
+  // Debug: log the user presence
+  // console.log('[debug] locals.user:', !!res.locals.user, res.locals.user && res.locals.user.username);
+  next();
+});
 
 // ====================
 // Multer Setup
@@ -112,26 +125,24 @@ app.locals.NODE_ENV = process.env.NODE_ENV || 'development';
 // ====================
 
 // Local Strategy
-passport.use(new LocalStrategy.Strategy(
-  {
-    usernameField: 'username',
-    passwordField: 'password'
-  },
-  async (username, password, done) => {
-    try {
-      const user = await users.findByUsername(username);
-      if (!user) {
-        return done(null, false, { message: 'Username not found' });
-      }
-      if (!bcrypt.compareSync(password, user.password)) {
-        return done(null, false, { message: 'Password incorrect' });
-      }
-      return done(null, user);
-    } catch (err) {
-      done(err);
-    }
+passport.use(new LocalStrategy.Strategy(async (username, password, done) => {
+  try {
+    // Support login by username OR email
+    let user = await users.findByUsername(username);
+    if (!user) user = await users.findByEmail(username);
+    if (!user) return done(null, false, { message: 'Invalid credentials' });
+
+    // When user registered via OAuth there may be no password
+    if (!user.password) return done(null, false, { message: 'Invalid credentials' });
+
+    const ok = bcrypt.compareSync(password, user.password);
+    if (!ok) return done(null, false, { message: 'Invalid credentials' });
+
+    return done(null, user);
+  } catch (err) {
+    return done(err);
   }
-));
+}));
 
 // Google Strategy
 passport.use(new GoogleStrategy.Strategy(
@@ -259,6 +270,8 @@ const sendMail = async (opts) => {
 // Home / Feed
 app.get('/', async (req, res) => {
   try {
+    // If user is not authenticated, send them to the login page instead
+    if (!req.isAuthenticated()) return res.redirect('/login');
     const allPhotos = await photos.getAll();
     const allVideos = await videos.getAll();
     
@@ -366,7 +379,8 @@ app.get('/login', (req, res) => {
   res.render('login', {
     message: req.query.message,
     GOOGLE_OAUTH: app.locals.GOOGLE_OAUTH,
-    ENTRA_OAUTH: app.locals.ENTRA_OAUTH
+    ENTRA_OAUTH: app.locals.ENTRA_OAUTH,
+    user: req.user
   });
 });
 
@@ -378,14 +392,15 @@ app.get('/register', (req, res) => {
   res.render('register', {
     message: req.query.message,
     GOOGLE_OAUTH: app.locals.GOOGLE_OAUTH,
-    ENTRA_OAUTH: app.locals.ENTRA_OAUTH
+    ENTRA_OAUTH: app.locals.ENTRA_OAUTH,
+    user: req.user
   });
 });
 
 // Forgot password page (alias to reset request)
 app.get('/forgot-password', (req, res) => {
   if (req.isAuthenticated()) return res.redirect('/');
-  res.render('forogt-password', { error: req.query.error || null });
+  res.render('forogt-password', { error: req.query.error || null, user: req.user });
 });
 
 // Handle forgot-password form (mirror /reset behavior)
@@ -519,6 +534,45 @@ app.post('/login', (req, res, next) => {
         ENTRA_OAUTH: app.locals.ENTRA_OAUTH
       });
     }
+    // If the user has 2FA enabled, start the 2FA flow instead of logging in directly
+    if (user.is2FAEnabled && user.is2FAEnabled !== 'none') {
+      try {
+        // Generate a short 6-digit code for email 2FA (if configured)
+            if (user.is2FAEnabled === 'email') {
+              const code = Math.floor(100000 + Math.random() * 900000).toString();
+              const expiresAt = Date.now() + 1000 * 60 * 10; // 10 minutes
+              // Attach debug code for development if mailer isn't configured or in development mode
+              const debug = (process.env.NODE_ENV !== 'production');
+              req.session.twoFactor = { userId: user.id, method: 'email', code, expiresAt, debug };
+              try {
+                await sendMail({
+                  to: user.email,
+                  subject: 'Your VibeNest login code',
+                  text: `Your VibeNest login code: ${code}`,
+                  html: `<p>Your VibeNest login code: <strong>${code}</strong></p>`
+                });
+                // mark success
+                req.session.twoFactor = { ...req.session.twoFactor, emailDeliveryFailed: false };
+              } catch (e) {
+                console.error('2FA email send error:', e && e.message);
+                // mark delivery failure so the /2fa-login view can show a notice
+                req.session.twoFactor = { ...req.session.twoFactor, emailDeliveryFailed: true };
+              }
+              return res.redirect('/2fa-login');
+            }
+        // Support authenticator (TOTP) 2FA
+        if (user.is2FAEnabled === 'authenticator') {
+          // Prepare a 2FA session marker and redirect to the 2FA form
+          const expiresAt = Date.now() + 1000 * 60 * 10; // 10 minutes
+          req.session.twoFactor = { userId: user.id, method: 'authenticator', expiresAt };
+          return res.redirect('/2fa-login');
+        }
+      } catch (e) {
+        console.error('2FA email send error:', e && e.message);
+        // continue to login if the 2FA step fails to send
+      }
+    }
+
     req.logIn(user, (err) => {
       if (err) {
         return res.render('login', {
@@ -532,19 +586,223 @@ app.post('/login', (req, res, next) => {
   })(req, res, next);
 });
 
+// 2FA Login Form
+app.get('/2fa-login', (req, res) => {
+  const twoFactor = req.session.twoFactor;
+  if (!twoFactor) return res.redirect('/login');
+  // Pass a debugCode for local development (helps when no mailer is configured)
+  const debugCode = twoFactor.debug ? twoFactor.code : null;
+  const emailDeliveryFailed = !!twoFactor.emailDeliveryFailed;
+  res.render('2fa-login', { error: null, twoFactorMethod: twoFactor.method, debugCode, emailDeliveryFailed });
+});
+
+// Verify 2FA via authenticator token (not implemented) or email
+app.post('/2fa-login', async (req, res) => {
+  try {
+    const twoFactor = req.session.twoFactor;
+    if (!twoFactor) return res.redirect('/login');
+    // Authenticator (TOTP) verification
+    if (twoFactor.method === 'authenticator') {
+      const { token, backupCode } = req.body;
+      if (!token && !backupCode) return res.render('2fa-login', { error: 'Code or backup code required', twoFactorMethod: 'authenticator' });
+      const user = await users.findById(twoFactor.userId);
+      if (!user || !user.twoFactorSecret) return res.render('2fa-login', { error: 'User or secret not found', twoFactorMethod: 'authenticator' });
+      authenticator.options = { window: 1 };
+      const valid = authenticator.check(String(token).trim(), user.twoFactorSecret);
+      if (!valid) {
+        // If token isn't valid, check backup codes if provided
+        if (backupCode && String(backupCode).trim()) {
+          // lookup unused codes for user
+          const rows = await backupCodes.findValidByUserAndCode(user.id, null);
+          let match = null;
+          for (const r of rows) {
+            try {
+              if (bcrypt.compareSync(String(backupCode).trim(), r.code)) { match = r; break; }
+            } catch (e) {}
+          }
+          if (match) {
+            // mark used and log user in
+            await backupCodes.markUsed(match.id);
+            await new Promise((resolve, reject) => {
+              req.logIn(user, (err) => (err ? reject(err) : resolve()));
+            });
+            delete req.session.twoFactor;
+            return res.redirect('/');
+          }
+        }
+        return res.render('2fa-login', { error: 'Invalid code', twoFactorMethod: 'authenticator' });
+      }
+      // Valid — log in the user
+      await new Promise((resolve, reject) => {
+        req.logIn(user, (err) => (err ? reject(err) : resolve()));
+      });
+      delete req.session.twoFactor;
+      return res.redirect('/');
+    }
+    // If it's not authenticator, fallback to login page
+    return res.redirect('/login');
+  } catch (err) {
+    console.error(err);
+    res.render('2fa-login', { error: 'Error validating code', twoFactorMethod: 'email' });
+  }
+});
+
+// Verify email 2FA code
+app.post('/2fa-verify-email', async (req, res) => {
+  try {
+    const { emailToken } = req.body;
+    const twoFactor = req.session.twoFactor;
+    if (!twoFactor) return res.render('2fa-login', { error: 'No login in progress', twoFactorMethod: 'email' });
+    if (twoFactor.method !== 'email') return res.render('2fa-login', { error: 'Email 2FA not active', twoFactorMethod: twoFactor.method });
+    if (Date.now() > twoFactor.expiresAt) return res.render('2fa-login', { error: 'Code expired', twoFactorMethod: 'email' });
+    if (String(emailToken).trim() !== String(twoFactor.code)) return res.render('2fa-login', { error: 'Invalid code', twoFactorMethod: 'email' });
+    // Valid — log in the user
+    const user = await users.findById(twoFactor.userId);
+    if (!user) return res.render('2fa-login', { error: 'User not found', twoFactorMethod: 'email' });
+    await new Promise((resolve, reject) => {
+      req.logIn(user, (err) => (err ? reject(err) : resolve()));
+    });
+    delete req.session.twoFactor;
+    res.redirect('/');
+  } catch (err) {
+    console.error(err);
+    res.render('2fa-login', { error: 'Error verifying code', twoFactorMethod: 'email' });
+  }
+});
+
+// 2FA resend endpoint
+app.post('/2fa-resend', async (req, res) => {
+  try {
+    const twoFactor = req.session.twoFactor;
+    if (!twoFactor) return res.status(400).json({ error: 'No login pending' });
+    const user = await users.findById(twoFactor.userId);
+    if (!user) return res.status(400).json({ error: 'User not found' });
+    if (twoFactor.method !== 'email') return res.status(400).json({ error: 'Only email 2FA supported' });
+    const code = Math.floor(100000 + Math.random() * 900000).toString();
+    twoFactor.code = code;
+    twoFactor.expiresAt = Date.now() + 1000 * 60 * 10;
+    req.session.twoFactor = twoFactor;
+    await sendMail({
+      to: user.email,
+      subject: 'Your VibeNest login code (resend)',
+      text: `Your login code: ${code}`,
+      html: `<p>Your login code: <strong>${code}</strong></p>`
+    });
+    res.json({ success: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to resend code' });
+  }
+});
+
+// GET backup codes status (unused count)
+app.get('/api/2fa/backup-codes', isAuthenticated, async (req, res) => {
+  try {
+    const user = await users.findById(req.user.id);
+    if (!user || user.is2FAEnabled !== 'authenticator') return res.status(400).json({ error: 'Authenticator 2FA not enabled' });
+    const rows = await backupCodes.getUnusedByUser(req.user.id);
+    res.json({ success: true, unused: rows.length });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to load backup codes status' });
+  }
+});
+
+// Regenerate backup codes (delete old, create new) — returns the plain codes to present once
+app.post('/api/2fa/backup-codes/regenerate', isAuthenticated, async (req, res) => {
+  try {
+    const user = await users.findById(req.user.id);
+    if (!user || user.is2FAEnabled !== 'authenticator') return res.status(400).json({ error: 'Authenticator 2FA not enabled' });
+
+    await backupCodes.deleteByUser(req.user.id);
+    const count = 10;
+    const plainCodes = [];
+    for (let i = 0; i < count; i++) {
+      const token = crypto.randomBytes(4).toString('hex').toUpperCase();
+      const code = `${token.slice(0,4)}-${token.slice(4,8)}`;
+      const id = uuidv4();
+      const hashed = bcrypt.hashSync(code, 10);
+      await backupCodes.create(id, req.user.id, hashed);
+      plainCodes.push(code);
+    }
+
+    res.json({ success: true, codes: plainCodes });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to regenerate codes' });
+  }
+});
+
 // Google OAuth
 app.get('/auth/google', passport.authenticate('google', { scope: ['profile', 'email'] }));
-app.get('/auth/google/callback', passport.authenticate('google', {
-  successRedirect: '/',
-  failureRedirect: '/login'
-}));
+app.get('/auth/google/callback', (req, res, next) => {
+  passport.authenticate('google', async (err, user, info) => {
+    if (err) return next(err);
+    if (!user) return res.redirect('/login');
+    // If user has 2FA enabled, start 2FA flow
+    if (user.is2FAEnabled && user.is2FAEnabled !== 'none') {
+      if (user.is2FAEnabled === 'email') {
+        const code = Math.floor(100000 + Math.random() * 900000).toString();
+        req.session.twoFactor = { userId: user.id, method: 'email', code, expiresAt: Date.now() + 1000 * 60 * 10 };
+        try {
+          await sendMail({
+            to: user.email,
+            subject: 'Your login code',
+            text: `Your login code: ${code}`,
+            html: `<p>Your login code: <strong>${code}</strong></p>`
+          });
+          req.session.twoFactor = { ...req.session.twoFactor, emailDeliveryFailed: false };
+        } catch (e) {
+          console.error('2FA send error (google):', e && e.message);
+          req.session.twoFactor = { ...req.session.twoFactor, emailDeliveryFailed: true };
+        }
+        return res.redirect('/2fa-login');
+      }
+      if (user.is2FAEnabled === 'authenticator') {
+        req.session.twoFactor = { userId: user.id, method: 'authenticator', expiresAt: Date.now() + 1000 * 60 * 10 };
+        return res.redirect('/2fa-login');
+      }
+    }
+    req.logIn(user, (err) => {
+      if (err) return next(err);
+      return res.redirect('/');
+    });
+  })(req, res, next);
+});
 
 // Entra ID OAuth
 app.get('/auth/entra', passport.authenticate('microsoft', { scope: ['user.read'] }));
-app.get('/auth/entra/callback', passport.authenticate('microsoft', {
-  successRedirect: '/',
-  failureRedirect: '/login'
-}));
+app.get('/auth/entra/callback', (req, res, next) => {
+  passport.authenticate('microsoft', async (err, user, info) => {
+    if (err) return next(err);
+    if (!user) return res.redirect('/login');
+    if (user.is2FAEnabled && user.is2FAEnabled !== 'none') {
+      if (user.is2FAEnabled === 'email') {
+        const code = Math.floor(100000 + Math.random() * 900000).toString();
+        req.session.twoFactor = { userId: user.id, method: 'email', code, expiresAt: Date.now() + 1000 * 60 * 10 };
+        try {
+          await sendMail({
+            to: user.email,
+            subject: 'Your VibeNest login code',
+            text: `Your login code: ${code}`,
+            html: `<p>Your login code: <strong>${code}</strong></p>`
+          });
+        } catch (e) {
+          console.error('2FA send error (entra):', e && e.message);
+        }
+        return res.redirect('/2fa-login');
+      }
+      if (user.is2FAEnabled === 'authenticator') {
+        req.session.twoFactor = { userId: user.id, method: 'authenticator', expiresAt: Date.now() + 1000 * 60 * 10 };
+        return res.redirect('/2fa-login');
+      }
+    }
+    req.logIn(user, (err) => {
+      if (err) return next(err);
+      return res.redirect('/');
+    });
+  })(req, res, next);
+});
 
 // Logout
 app.get('/logout', (req, res) => {
@@ -668,10 +926,158 @@ app.get('/settings', isAuthenticated, (req, res) => {
   res.render('settings', { user: req.user });
 });
 
-// Support page
-app.get('/support', (req, res) => {
-  res.render('support', { user: req.user });
+// Update user settings via API
+app.post('/api/settings', isAuthenticated, async (req, res) => {
+  try {
+    const { displayName, bio } = req.body;
+    const updates = {};
+    if (displayName) updates.displayName = displayName;
+    if (typeof bio !== 'undefined') updates.bio = bio;
+    if (Object.keys(updates).length === 0) return res.status(400).json({ error: 'No updates provided' });
+    await users.update(req.user.id, updates);
+    const updated = await users.findById(req.user.id);
+    res.json({ success: true, user: updated });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
 });
+
+// Upload page — render upload form
+app.get('/upload', isAuthenticated, (req, res) => {
+  res.render('upload', { user: req.user });
+});
+
+// Upload API — handle media uploads
+app.post('/api/upload', isAuthenticated, upload.single('photo'), async (req, res) => {
+  try {
+    const file = req.file;
+    const { caption } = req.body;
+    if (!file) return res.status(400).json({ error: 'File is required' });
+    const isVideo = file.mimetype && file.mimetype.startsWith('video/');
+    if (isVideo) {
+      await videos.create({ id: uuidv4(), userId: req.user.id, filename: file.filename, caption });
+    } else {
+      await photos.create({ id: uuidv4(), userId: req.user.id, filename: file.filename, caption });
+    }
+    res.json({ success: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Setup 2FA page - show options
+app.get('/setup-2fa', isAuthenticated, async (req, res) => {
+  try {
+    const user = await users.findById(req.user.id);
+    // If user already has an authenticator secret, show it. Otherwise generate a temporary secret
+    let secret = user.twoFactorSecret || null;
+    let qrCodeImage = null;
+
+    if (!secret) {
+      // Generate a temporary secret and keep it in session until verified
+      secret = authenticator.generateSecret();
+      req.session.pendingTwoFactorSecret = secret;
+    }
+
+    try {
+      const otpauth = authenticator.keyuri(user.email || (user.username + '@vibenest.local'), 'VibeNest', secret);
+      qrCodeImage = await QRCode.toDataURL(otpauth);
+    } catch (e) {
+      console.error('QR generation error:', e && e.message);
+    }
+
+    res.render('setup-2fa', { user: req.user, qrCodeImage, secret, error: null, message: null, plainCodes: null });
+  } catch (err) {
+    console.error(err);
+    res.render('setup-2fa', { user: req.user, qrCodeImage: null, secret: null, error: 'Error loading 2FA setup', plainCodes: null });
+  }
+});
+
+// Enable email 2FA
+app.post('/enable-email-2fa', isAuthenticated, async (req, res) => {
+  try {
+    await users.update(req.user.id, { is2FAEnabled: 'email' });
+    res.render('setup-2fa', { user: req.user, qrCodeImage: null, secret: null, error: null, message: 'Email 2FA enabled', plainCodes: null });
+  } catch (err) {
+    console.error(err);
+    res.render('setup-2fa', { user: req.user, qrCodeImage: null, secret: null, error: 'Failed to enable email 2FA', plainCodes: null });
+  }
+});
+
+// Setup authenticator 2FA (simplified) — stores a random secret and marks authenticator as enabled
+app.post('/setup-2fa', isAuthenticated, async (req, res) => {
+  try {
+    const { token } = req.body;
+    // Prefer the pending secret in session (generated on GET) otherwise fall back to stored secret
+    const pending = req.session.pendingTwoFactorSecret;
+    const user = await users.findById(req.user.id);
+    const secret = pending || user.twoFactorSecret;
+    if (!secret) return res.render('setup-2fa', { user: req.user, qrCodeImage: null, secret: null, error: 'No secret available to verify', message: null });
+
+    // Allow a small time-window tolerance
+    authenticator.options = { window: 1 };
+    const valid = authenticator.check(String(token || '').trim(), secret);
+    if (!valid) {
+      // Re-generate QR so user can retry (if pending secret exists)
+      let qrCodeImage = null;
+      try {
+        const otpauth = authenticator.keyuri(user.email || (user.username + '@vibenest.local'), 'VibeNest', secret);
+        qrCodeImage = await QRCode.toDataURL(otpauth);
+      } catch (e) {}
+      return res.render('setup-2fa', { user: req.user, qrCodeImage, secret, error: 'Invalid code, please try again', message: null, plainCodes: null });
+    }
+
+    // Valid token: store secret permanently and mark authenticator 2FA enabled
+    await users.update(req.user.id, { twoFactorSecret: secret, is2FAEnabled: 'authenticator' });
+    delete req.session.pendingTwoFactorSecret;
+
+    // Show success and the secret/QR (so user can keep a backup)
+    let qrCodeImage = null;
+    try {
+      const otpauth = authenticator.keyuri(user.email || (user.username + '@vibenest.local'), 'VibeNest', secret);
+      qrCodeImage = await QRCode.toDataURL(otpauth);
+    } catch (e) {}
+
+    // Generate backup codes for the user and present them once
+    try {
+      // remove old codes
+      await backupCodes.deleteByUser(req.user.id);
+      const count = 10;
+      const plainCodes = [];
+      for (let i = 0; i < count; i++) {
+        // formatted code like AAAA-BBBB
+        const token = crypto.randomBytes(4).toString('hex').toUpperCase();
+        const code = `${token.slice(0,4)}-${token.slice(4,8)}`;
+        const id = uuidv4();
+        const hashed = bcrypt.hashSync(code, 10);
+        await backupCodes.create(id, req.user.id, hashed);
+        plainCodes.push(code);
+      }
+      res.render('setup-2fa', { user: req.user, qrCodeImage, secret, error: null, message: 'Two-factor authentication enabled (Authenticator app)', plainCodes });
+    } catch (e) {
+      console.error('Backup codes generation error:', e && e.message);
+      res.render('setup-2fa', { user: req.user, qrCodeImage, secret, error: null, message: 'Two-factor authentication enabled (Authenticator app)', plainCodes: null });
+    }
+  } catch (err) {
+    console.error(err);
+    res.render('setup-2fa', { user: req.user, qrCodeImage: null, secret: null, error: 'Failed to setup 2FA', plainCodes: null });
+  }
+});
+
+// Disable 2FA (authenticator or email)
+app.post('/disable-2fa', isAuthenticated, async (req, res) => {
+  try {
+    await users.update(req.user.id, { is2FAEnabled: 'none', twoFactorSecret: null });
+    res.redirect('/settings');
+  } catch (err) {
+    console.error('Disable 2FA error:', err);
+    res.redirect('/settings');
+  }
+});
+
+// Support page - handled earlier to allow flash messages
 
 // Check email page (generic)
 app.get('/check-email', (req, res) => {
@@ -696,6 +1102,11 @@ app.get('/verify/:token', async (req, res) => {
     console.error(err);
     res.render('verify', { success: false, message: 'Error processing verification.' });
   }
+});
+
+// Simple verified page (backward compatibility with older templates)
+app.get('/verified', (req, res) => {
+  res.render('verified', { message: 'Your account has been successfully verified. You can now log in.' });
 });
 
 // (Resend verification handled earlier) — this block removed to avoid duplicate handlers
@@ -975,7 +1386,7 @@ app.delete('/api/video-comments/:videoCommentId', isAuthenticated, async (req, r
 // ====================
 app.use((err, req, res, next) => {
   console.error(err);
-  res.status(500).render('error', { error: err.message || 'Something went wrong' });
+  res.status(500).render('error', { error: err.message || 'Something went wrong', user: req.user || null });
 });
 
 // Auto-logout unverified users on every request

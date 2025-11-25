@@ -43,6 +43,72 @@ See `.env.example` for all recommended variables. Important ones:
 - Support form (logs email to console when no transporter configured)
 - **Full Mailjet integration for all email sending**
 
+## Two-Factor Authentication (2FA)
+
+This project supports two 2FA methods:
+
+- Email 2FA: receive a one-time 6-digit code via email during login.
+- Authenticator App (TOTP): use an authenticator app (Google Authenticator, Authy, etc.) by scanning a QR code.
+
+How to test 2FA locally
+
+1. Install dependencies and start the app:
+
+```bash
+npm install
+npm start
+```
+
+2. Register a local account via `/register` and log in.
+
+3. Open the Settings page (`/settings`) and click `Manage 2FA`.
+
+4. For Authenticator App (recommended):
+  - Scan the QR code with your authenticator app or copy the secret key.
+  - Enter the 6-digit code from your app and submit to enable 2FA.
+
+5. To test login with Authenticator App enabled:
+  - Log out, then log in with your username/password.
+  - After successful password verification, if your account has Authenticator 2FA enabled, you should be prompted to enter a 2FA code (via `/2fa-login` flows).
+
+6. For Email 2FA: enable it from the same page. The app will send a 6-digit code to your account's email when logging in.
+
+Notes
+
+- Emails are sent via Mailjet when `MAILJET_API_KEY` and `MAILJET_API_SECRET` are set in `.env`. If Mailjet is not configured, the app will fall back to SMTP (if provided) or log emails to the console for development.
+- The server stores the TOTP secret encrypted in the database only if you successfully verify the code during setup. A temporary secret is used in the session until verification completes.
+
+### Quick local testing checklist (UI & 2FA)
+
+- Start the app locally:
+
+```bash
+npm install
+npm run dev
+```
+
+- Open the app at http://localhost:3000 and register a new user via the Register page.
+- To test Authenticator (TOTP):
+  - Visit Settings → Manage 2FA → Authenticator App.
+  - Scan the QR code with your authenticator (Google Authenticator, Authy, etc.) or copy the secret key.
+  - Enter the 6-digit code from your app and click Enable 2FA.
+  - Log out, log back in — after the password step you will be prompted for the TOTP code at /2fa-login.
+
+- To test Email 2FA (if you don't have Mailjet/SMTP configured):
+  - Enable Email 2FA from the same Settings → Manage 2FA screen.
+  - Try logging in; the 6-digit code will be logged to the server console if mail transport is not configured.
+
+- UI & navigation to check:
+  - The top navigation header is centralized in `views/partials/header.ejs`. Verify the dropdown under Settings contains: Account settings, Two-factor (2FA), Resend verification, Support, and (if admin) Admin → Resend verification.
+  - Core pages (Feed, Upload, Settings, Login, Register, 2FA pages and recovery pages) were modernized to use a shared theme in `public/css/theme.css` and updated button styles.
+
+### Backup / recovery codes (Auth app)
+
+- After enabling Authenticator (TOTP) 2FA you will be shown a set of single-use backup codes (10 by default). These are shown only once — copy them or download them immediately and store them securely.
+- If you lose access to your authenticator, use one backup code at the `/2fa-login` prompt. Each code can only be used once. You can regenerate the entire set from Settings → Manage 2FA which invalidates old codes and gives you a fresh batch.
+
+If you want me to add automated tests or provide a small demo script that exercises these flows automatically, I can add that next.
+
 ## Mailjet integration
 - The app uses Mailjet for all email sending (verification, password reset, support).
 - If Mailjet credentials are not provided, it will fall back to SMTP or log emails to the console for development.
@@ -64,3 +130,53 @@ Admin tools
 - As of November 2025, the SSRF vulnerability in the `ip` package (used by Mailjet and its dependencies) may affect your app. Review advisories and keep dependencies up to date.
 
 If you'd like, I can add unit tests or Dockerfile next.
+
+## Local Testing / Quick Validation (Upload, 2FA, Settings)
+
+1. Start the application:
+
+```bash
+cp .env.example .env
+npm install
+npm start
+```
+
+2. Register a user via web UI or curl (without email verification — see step 4):
+
+```bash
+curl -i -c cookies.txt -L -X POST \
+  -d "username=testuser" \
+  -d "email=test@example.com" \
+  -d "password=supersecret" \
+  -d "confirmPassword=supersecret" \
+  -d "displayName=Tester" \
+  http://localhost:3000/register
+```
+
+3. Login (keep cookies) and visit the upload page:
+
+```bash
+curl -i -L -c cookies.txt -b cookies.txt -X POST -d "username=testuser" -d "password=supersecret" http://localhost:3000/login
+curl -i -b cookies.txt http://localhost:3000/upload
+```
+
+4. If verification emails are enabled and required in production, either use the email delivery configured in `.env` (Mailjet/SMTP) or set the user as verified directly in the DB for development:
+
+```bash
+sqlite3 vibenest.db "UPDATE users SET verified = 1 WHERE username = 'testuser';"
+```
+
+5. Upload a file to `/api/upload` (with session cookies):
+```bash
+curl -i -b cookies.txt -F "photo=@/path/to/image.jpg;type=image/jpeg" -F "caption=Test upload" http://localhost:3000/api/upload
+```
+
+6. Enable email 2FA or Authenticator 2FA at `/setup-2fa` (UI); verify the authenticator token, or for email check the server console for the code when SMTP/Mailjet isn't configured.
+
+7. To test the 2FA login flow after enabling email 2FA, login again and you'll be redirected to `/2fa-login` where you need to enter the code emailed to the user or logged in server stdout.
+
+8. To generate backup codes for authenticator 2FA (single use), use the button on `/setup-2fa` or POST to `/api/2fa/backup-codes/regenerate`.
+
+Notes:
+- All pages use the central `public/css/theme.css` for theming and include a shared header partial `views/partials/header.ejs`.
+- If the header throws an error about `user` not being defined, ensure sessions are set up or restart the server — the app now sets `res.locals.user` for every request.

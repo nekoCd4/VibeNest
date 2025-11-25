@@ -4,175 +4,15 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>VibeNest - Settings</title>
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: #f5f5f5;
-            padding: 20px;
-        }
-
-        .header {
-            background: white;
-            padding: 16px;
-            border-radius: 8px;
-            margin-bottom: 20px;
-            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-
-        .header h1 {
-            color: #667eea;
-            font-size: 24px;
-        }
-
-        .nav-links {
-            display: flex;
-            gap: 20px;
-        }
-
-        .nav-links a, .nav-links button {
-            text-decoration: none;
-            color: #667eea;
-            font-weight: 500;
-            cursor: pointer;
-            background: none;
-            border: none;
-            font-size: 14px;
-            transition: color 0.3s;
-        }
-
-        .nav-links a:hover, .nav-links button:hover {
-            color: #764ba2;
-        }
-
-        .container {
-            max-width: 600px;
-            margin: 0 auto;
-            background: white;
-            border-radius: 8px;
-            padding: 40px;
-            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
-        }
-
-        .settings-title {
-            font-size: 28px;
-            color: #333;
-            margin-bottom: 30px;
-        }
-
-        .form-group {
-            margin-bottom: 24px;
-        }
-
-        label {
-            display: block;
-            margin-bottom: 8px;
-            color: #333;
-            font-weight: 600;
-            font-size: 14px;
-        }
-
-        input[type="text"],
-        textarea {
-            width: 100%;
-            padding: 12px;
-            border: 1px solid #ddd;
-            border-radius: 8px;
-            font-size: 14px;
-            font-family: inherit;
-            transition: border-color 0.3s;
-        }
-
-        input:focus,
-        textarea:focus {
-            outline: none;
-            border-color: #667eea;
-            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
-        }
-
-        textarea {
-            resize: vertical;
-            min-height: 100px;
-        }
-
-        button {
-            width: 100%;
-            padding: 12px;
-            background: #667eea;
-            color: white;
-            border: none;
-            border-radius: 8px;
-            font-size: 14px;
-            font-weight: 600;
-            cursor: pointer;
-            transition: all 0.3s;
-        }
-
-        button:hover {
-            background: #5568d3;
-            transform: translateY(-2px);
-            box-shadow: 0 5px 20px rgba(102, 126, 234, 0.4);
-        }
-
-        .success {
-            background: #efe;
-            color: #3c3;
-            border: 1px solid #cfc;
-            padding: 12px;
-            border-radius: 6px;
-            margin-bottom: 20px;
-            display: none;
-        }
-
-        .success.show {
-            display: block;
-        }
-
-        .user-info {
-            background: #f9f9f9;
-            padding: 16px;
-            border-radius: 8px;
-            margin-bottom: 24px;
-            border-left: 4px solid #667eea;
-        }
-
-        .user-info h3 {
-            margin: 0 0 4px 0;
-            color: #333;
-            font-size: 14px;
-        }
-
-        .user-info p {
-            margin: 0;
-            color: #666;
-            font-size: 13px;
-        }
-    </style>
+    <link rel="stylesheet" href="/css/theme.css">
 </head>
 <body>
-    <div class="header">
-        <h1>📸 VibeNest</h1>
-        <div class="nav-links">
-            <a href="/">Feed</a>
-            <a href="/upload">Upload</a>
-            <form action="/logout" method="GET" style="margin: 0;">
-                <button type="submit">Logout</button>
-            </form>
-        </div>
-    </div>
+    <%- include('partials/header') %>
 
     <div class="container">
         <h2 class="settings-title">Settings</h2>
 
-        <div id="successMessage" class="success">
+        <div id="successMessage" class="message success" style="display:none;">
             Settings updated successfully!
         </div>
 
@@ -187,6 +27,50 @@
             <% } %>
         </div>
 
+        <div style="margin-bottom:24px;">
+            <h3 style="margin-bottom:8px;">Two-Factor Authentication</h3>
+            <p style="color:#555;margin-bottom:12px;">Status: <strong><%= (user.is2FAEnabled && user.is2FAEnabled !== 'none') ? 'Enabled' : 'Disabled' %></strong></p>
+            <div style="display:flex;gap:12px;">
+                <a class="btn btn-primary" href="/setup-2fa">Manage 2FA</a>
+                <% if (user.is2FAEnabled && user.is2FAEnabled !== 'none') { %>
+                    <form action="/disable-2fa" method="POST" style="margin:0;">
+                        <button type="submit" class="btn danger">Disable 2FA</button>
+                    </form>
+                <% } %>
+            </div>
+                        <% if (user.is2FAEnabled && user.is2FAEnabled === 'authenticator') { %>
+                            <div style="margin-top:12px;padding:12px;border-radius:8px;border:1px solid var(--border);background:linear-gradient(180deg, rgba(0,0,0,0.02), transparent);">
+                                <div style="display:flex;justify-content:space-between;align-items:center">
+                                    <div>
+                                        <div style="font-weight:700">Backup / recovery codes</div>
+                                        <div class="small muted">Single-use codes to recover access if you lose your authenticator</div>
+                                    </div>
+                                    <div style="display:flex;gap:8px;align-items:center">
+                                        <div id="backup-status" class="small muted">Checking…</div>
+                                        <button id="regen-backup" class="btn ghost">Regenerate</button>
+                                    </div>
+                                </div>
+                                <div id="backup-codes-box" style="display:none;margin-top:12px;padding:10px;background:var(--card);border-radius:6px">
+                                    <div class="small muted">Your new backup codes (shown once):</div>
+                                    <pre id="backup-codes-list" style="font-family:monospace;margin-top:6px;white-space:pre-wrap"></pre>
+                                    <div style="display:flex;gap:8px;margin-top:8px"><button id="backup-download" class="btn ghost">Download</button><button id="backup-copy" class="btn">Copy</button></div>
+                                </div>
+                            </div>
+                        <% } %>
+        </div>
+
+        <div style="margin-bottom:24px;">
+            <h3 style="margin-bottom:8px;">Theme</h3>
+            <p style="color:#555;margin-bottom:12px;">Choose a universal theme for the site (applies across pages).</p>
+            <form id="themeForm">
+                <label style="display:block;margin-bottom:8px;"><input type="radio" name="theme" value="light"> Light ☀️</label>
+                <label style="display:block;margin-bottom:8px;"><input type="radio" name="theme" value="dark"> Dark 🌙</label>
+                <label style="display:block;margin-bottom:8px;"><input type="radio" name="theme" value="system"> System (follow OS)</label>
+                <div style="margin-top:8px;"><button id="saveTheme" class="btn btn-primary" type="button">Save Theme</button></div>
+            </form>
+            <div id="themeSaved" class="small muted" style="display:none;margin-top:8px">Theme updated.</div>
+        </div>
+
         <form id="settingsForm">
             <div class="form-group">
                 <label for="displayName">Display Name</label>
@@ -198,7 +82,7 @@
                 <textarea id="bio" name="bio" placeholder="Tell us about yourself"><%= user.bio || '' %></textarea>
             </div>
 
-            <button type="submit">Save Changes</button>
+            <button type="submit" class="btn btn-primary">Save Changes</button>
         </form>
     </div>
 
@@ -229,6 +113,83 @@
                 console.error('Error:', error);
             }
         });
+        // Backup codes management
+        (function(){
+            const status = document.getElementById('backup-status');
+            const regen = document.getElementById('regen-backup');
+            const box = document.getElementById('backup-codes-box');
+            const list = document.getElementById('backup-codes-list');
+            const download = document.getElementById('backup-download');
+            const copy = document.getElementById('backup-copy');
+
+            async function updateStatus(){
+                if (!status) return;
+                try {
+                    const r = await fetch('/api/2fa/backup-codes');
+                    const j = await r.json();
+                    if (j && j.success) status.textContent = j.unused + ' unused';
+                    else status.textContent = 'n/a';
+                } catch (e) { status.textContent = 'error'; }
+            }
+            updateStatus();
+
+            if (regen) regen.addEventListener('click', async () => {
+                if (!confirm('Regenerating will invalidate existing backup codes. Continue?')) return;
+                regen.disabled = true; regen.textContent = 'Generating…';
+                try {
+                    const r = await fetch('/api/2fa/backup-codes/regenerate', { method: 'POST' });
+                    const j = await r.json();
+                    if (j && j.success) {
+                        box.style.display = 'block';
+                        list.textContent = j.codes.join('\n');
+                        download.onclick = () => {
+                            const blob = new Blob([j.codes.join('\n')], { type: 'text/plain' });
+                            const url = URL.createObjectURL(blob);
+                            const a = document.createElement('a'); a.href = url; a.download = 'vibenest-backup-codes.txt'; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+                        };
+                        copy.onclick = async () => { await navigator.clipboard.writeText(j.codes.join('\n')); copy.textContent = 'Copied'; setTimeout(()=>copy.textContent='Copy',2000); };
+                        updateStatus();
+                    } else {
+                        alert('Failed to regenerate: ' + (j && j.error));
+                    }
+                } catch (e) { alert('Error: ' + e.message); }
+                regen.disabled = false; regen.textContent = 'Regenerate';
+            });
+        })();
+    </script>
+    <script src="/js/theme-toggle.js"></script>
+    <script>
+        // Wire theme form to the global theme helper exposed by theme-toggle.js
+        (function(){
+            const key = 'vibenest-theme';
+            const form = document.getElementById('themeForm');
+            const saveBtn = document.getElementById('saveTheme');
+            const savedNote = document.getElementById('themeSaved');
+
+            function getStored(){ try { return localStorage.getItem(key) || 'dark'; } catch (e) { return 'dark'; } }
+            function setStored(v){ try { localStorage.setItem(key, v); } catch(e){} }
+
+            // Initialize radio selection
+            const current = window.vibeTheme && window.vibeTheme.get ? window.vibeTheme.get() : getStored();
+            const radios = form.querySelectorAll('input[name="theme"]');
+            radios.forEach(r => { if (r.value === current) r.checked = true; if (r.value === 'system' && (current !== 'light' && current !== 'dark')) r.checked = true; });
+
+            saveBtn.addEventListener('click', () => {
+                const sel = form.querySelector('input[name="theme"]:checked');
+                if (!sel) return;
+                const val = sel.value;
+                if (val === 'system') {
+                    // Store 'system' and let the theme helper resolve current preference
+                    setStored('system');
+                    if (window.vibeTheme && window.vibeTheme.set) window.vibeTheme.set('system');
+                } else {
+                    setStored(val);
+                    if (window.vibeTheme && window.vibeTheme.set) window.vibeTheme.set(val);
+                }
+                savedNote.style.display = 'block';
+                setTimeout(()=> savedNote.style.display = 'none', 2000);
+            });
+        })();
     </script>
 </body>
 </html>

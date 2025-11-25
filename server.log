@@ -1,0 +1,103 @@
+[dotenv@17.2.3] injecting env (18) from .env -- tip: 🔐 prevent committing .env to code: https://dotenvx.com/precommit
+✨ VibeNest running on http://localhost:3000
+Make sure to set your OAuth credentials in .env
+[debug] locals.user: false null
+[debug] locals.user: true testuser2
+[debug] locals.user: false null
+[debug] locals.user: false null
+[debug] locals.user: true testuser2
+[debug] locals.user: true testuser2
+ReferenceError: /workspaces/VibeNest/views/setup-2fa.ejs:179
+    177|     <% } %>
+    178| 
+ >> 179|     <% if (plainCodes && plainCodes.length) { %>
+    180|       <div class="card" style="padding:12px;margin:12px 0;border-radius:8px;">
+    181|         <h3 style="margin:0 0 8px 0">Your backup / recovery codes (save them now)</h3>
+    182|         <p class="small muted">These codes are shown only once. Store them somewhere safe — each code is single-use.</p>
+
+plainCodes is not defined
+    at eval ("/workspaces/VibeNest/views/setup-2fa.ejs":33:8)
+    at setup-2fa (/workspaces/VibeNest/node_modules/ejs/lib/ejs.js:703:17)
+    at tryHandleCache (/workspaces/VibeNest/node_modules/ejs/lib/ejs.js:274:36)
+    at exports.renderFile [as engine] (/workspaces/VibeNest/node_modules/ejs/lib/ejs.js:491:10)
+    at View.render (/workspaces/VibeNest/node_modules/express/lib/view.js:139:8)
+    at tryRender (/workspaces/VibeNest/node_modules/express/lib/application.js:627:10)
+    at Function.render (/workspaces/VibeNest/node_modules/express/lib/application.js:574:3)
+    at ServerResponse.render (/workspaces/VibeNest/node_modules/express/lib/response.js:909:7)
+    at file:///workspaces/VibeNest/server.js:991:9
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5) {
+  path: '/workspaces/VibeNest/views/setup-2fa.ejs'
+}
+[debug] locals.user: true testuser2
+ReferenceError: /workspaces/VibeNest/views/setup-2fa.ejs:179
+    177|     <% } %>
+    178| 
+ >> 179|     <% if (plainCodes && plainCodes.length) { %>
+    180|       <div class="card" style="padding:12px;margin:12px 0;border-radius:8px;">
+    181|         <h3 style="margin:0 0 8px 0">Your backup / recovery codes (save them now)</h3>
+    182|         <p class="small muted">These codes are shown only once. Store them somewhere safe — each code is single-use.</p>
+
+plainCodes is not defined
+    at eval ("/workspaces/VibeNest/views/setup-2fa.ejs":33:8)
+    at setup-2fa (/workspaces/VibeNest/node_modules/ejs/lib/ejs.js:703:17)
+    at tryHandleCache (/workspaces/VibeNest/node_modules/ejs/lib/ejs.js:274:36)
+    at exports.renderFile [as engine] (/workspaces/VibeNest/node_modules/ejs/lib/ejs.js:491:10)
+    at View.render (/workspaces/VibeNest/node_modules/express/lib/view.js:139:8)
+    at tryRender (/workspaces/VibeNest/node_modules/express/lib/application.js:627:10)
+    at Function.render (/workspaces/VibeNest/node_modules/express/lib/application.js:574:3)
+    at ServerResponse.render (/workspaces/VibeNest/node_modules/express/lib/response.js:909:7)
+    at file:///workspaces/VibeNest/server.js:991:9
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5) {
+  path: '/workspaces/VibeNest/views/setup-2fa.ejs'
+}
+[debug] locals.user: false null
+[debug] locals.user: true testuser2
+[debug] locals.user: true testuser2
+[debug] locals.user: true testuser2
+ReferenceError: /workspaces/VibeNest/views/setup-2fa.ejs:179
+    177|     <% } %>
+    178| 
+ >> 179|     <% if (plainCodes && plainCodes.length) { %>
+    180|       <div class="card" style="padding:12px;margin:12px 0;border-radius:8px;">
+    181|         <h3 style="margin:0 0 8px 0">Your backup / recovery codes (save them now)</h3>
+    182|         <p class="small muted">These codes are shown only once. Store them somewhere safe — each code is single-use.</p>
+
+plainCodes is not defined
+    at eval ("/workspaces/VibeNest/views/setup-2fa.ejs":33:8)
+    at setup-2fa (/workspaces/VibeNest/node_modules/ejs/lib/ejs.js:703:17)
+    at tryHandleCache (/workspaces/VibeNest/node_modules/ejs/lib/ejs.js:274:36)
+    at exports.renderFile [as engine] (/workspaces/VibeNest/node_modules/ejs/lib/ejs.js:491:10)
+    at View.render (/workspaces/VibeNest/node_modules/express/lib/view.js:139:8)
+    at tryRender (/workspaces/VibeNest/node_modules/express/lib/application.js:627:10)
+    at Function.render (/workspaces/VibeNest/node_modules/express/lib/application.js:574:3)
+    at ServerResponse.render (/workspaces/VibeNest/node_modules/express/lib/response.js:909:7)
+    at file:///workspaces/VibeNest/server.js:991:9
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5) {
+  path: '/workspaces/VibeNest/views/setup-2fa.ejs'
+}
+[debug] locals.user: true testuser2
+ReferenceError: /workspaces/VibeNest/views/setup-2fa.ejs:264
+    262|       const copyBtn = document.getElementById('copy-codes');
+    263|       if (!download && !copyBtn) return;
+ >> 264|       const codes = <%- JSON.stringify(plainCodes || []) %>;
+    265|       if (download) download.addEventListener('click', () => {
+    266|         const blob = new Blob([codes.join('\n')], { type: 'text/plain' });
+    267|         const url = URL.createObjectURL(blob);
+
+plainCodes is not defined
+    at eval ("/workspaces/VibeNest/views/setup-2fa.ejs":69:32)
+    at setup-2fa (/workspaces/VibeNest/node_modules/ejs/lib/ejs.js:703:17)
+    at tryHandleCache (/workspaces/VibeNest/node_modules/ejs/lib/ejs.js:274:36)
+    at exports.renderFile [as engine] (/workspaces/VibeNest/node_modules/ejs/lib/ejs.js:491:10)
+    at View.render (/workspaces/VibeNest/node_modules/express/lib/view.js:139:8)
+    at tryRender (/workspaces/VibeNest/node_modules/express/lib/application.js:627:10)
+    at Function.render (/workspaces/VibeNest/node_modules/express/lib/application.js:574:3)
+    at ServerResponse.render (/workspaces/VibeNest/node_modules/express/lib/response.js:909:7)
+    at file:///workspaces/VibeNest/server.js:991:9
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5) {
+  path: '/workspaces/VibeNest/views/setup-2fa.ejs'
+}
+[debug] locals.user: true testuser2
+[debug] locals.user: false null
+[debug] locals.user: true testuser2
+[debug] locals.user: true testuser2

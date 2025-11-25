@@ -1,0 +1,155 @@
+/* VibeNest shared theme stylesheet - uses CSS variables for light/dark themes */
+:root{
+  --bg: #ffffff;
+  --card: #ffffff;
+  --text: #222222;
+  --muted: #666666;
+  --accent: #667eea;
+  --accent-2: #764ba2;
+  --success: #28a745;
+  --danger: #e74c3c;
+  --border: #e6e6e6;
+  --focus: rgba(102,126,234,0.18);
+}
+
+[data-theme='dark']{
+  --bg: #0f1113;
+  --card: #121214;
+  --text: #e6e6e6;
+  --muted: #9aa0a6;
+  --accent: #4a90e2;
+  --accent-2: #8a56d8;
+  --success: #3ccf8e;
+  --danger: #ff6b6b;
+  --border: #212226;
+  --focus: rgba(74,144,226,0.15);
+}
+
+*{box-sizing:border-box}
+html,body{height:100%;margin:0;font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;background:var(--bg);color:var(--text)}
+
+.header{background:var(--card);padding:16px;border-radius:8px;margin-bottom:20px;box-shadow:0 1px 3px rgba(0,0,0,0.06);display:flex;justify-content:space-between;align-items:center}
+.header h1{color:var(--accent);font-size:24px;margin:0}
+
+.nav-links{display:flex;gap:12px;align-items:center}
+.nav-links a{color:var(--accent);text-decoration:none;font-weight:600}
+.nav-links button{background:none;border:none;color:var(--accent);cursor:pointer;font-size:14px}
+
+.container{max-width:900px;margin:0 auto;background:var(--card);border-radius:8px;padding:28px;box-shadow:0 1px 3px rgba(0,0,0,0.06)}
+
+.btn{display:inline-block;padding:10px 14px;border-radius:8px;background:var(--accent);color:white;border:none;cursor:pointer;font-weight:700}
+.btn.ghost{background:transparent;color:var(--accent);border:1px solid var(--border)}
+.btn.danger{background:var(--danger)}
+
+/* Modern button variants kept for legacy pages */
+.btn-primary{background:linear-gradient(90deg,var(--accent),var(--accent-2));box-shadow:0 6px 18px rgba(102,126,234,0.14);}
+.btn-primary:hover{transform:translateY(-2px);opacity:0.97}
+.btn-outline{background:transparent;border:1px solid var(--border);color:var(--text)}
+.btn-oauth{display:flex;align-items:center;gap:10px;padding:10px 14px;border-radius:10px;background:var(--card);border:1px solid var(--border);cursor:pointer;color:var(--text)}
+.btn-oauth svg{opacity:0.95}
+
+/* Link-like button */
+.btn-link{background:transparent;border:none;color:var(--accent);text-decoration:underline;cursor:pointer;font-weight:600;padding:0}
+
+/* File input / upload controls */
+.file-input-wrapper{position:relative;border:1px dashed var(--border);padding:14px;border-radius:10px;background:linear-gradient(180deg, rgba(0,0,0,0.01), transparent)}
+.file-input-wrapper input[type="file"]{position:absolute;inset:0;opacity:0;cursor:pointer}
+.file-label{display:flex;align-items:center;gap:12px;padding:12px;border-radius:8px;cursor:pointer}
+.file-label .file-text strong{display:block}
+.file-label .file-text span{display:block;font-size:12px;color:var(--muted)}
+.file-label.has-file{border-radius:8px;border:1px solid var(--accent);box-shadow:0 8px 28px var(--focus)}
+.preview-container{display:none;margin-top:12px;border-radius:8px;overflow:hidden}
+.preview-container.show{display:block}
+.preview-image{display:block;width:100%;max-height:320px;object-fit:cover;border-radius:6px}
+
+/* Notifications */
+.message{padding:12px;border-radius:8px;margin-bottom:16px;background:linear-gradient(180deg, rgba(0,0,0,0.01), transparent);border:1px solid var(--border)}
+.message.error{background:linear-gradient(180deg, rgba(231,76,60,0.06), rgba(231,76,60,0.02));border-color:rgba(231,76,60,0.2)}
+.message.success{background:linear-gradient(180deg, rgba(40,167,69,0.06), rgba(40,167,69,0.02));border-color:rgba(40,167,69,0.15)}
+
+/* success pop-in animation */
+.message.show{animation:pop .28s ease both}
+@keyframes pop{from{transform:translateY(-6px);opacity:0}to{transform:none;opacity:1}}
+
+/* Settings form, header, and utility improvements */
+.settings-title{margin-top:0;margin-bottom:12px}
+.user-info h3{margin-bottom:6px;margin-top:0}
+.user-info p{margin:0;color:var(--muted)}
+
+/* Small helpers */
+.muted{color:var(--muted)}
+.card-actions{display:flex;gap:8px;align-items:center}
+
+/* Dropdown / menu */
+.dropdown-menu{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:8px;box-shadow:0 6px 24px rgba(0,0,0,0.12)}
+.dropdown-item{display:block;padding:8px 12px;border-radius:6px;color:var(--text);text-decoration:none;font-weight:600}
+.dropdown-item:hover{background:var(--focus);color:var(--text)}
+
+/* small logo balance */
+.logo{font-size:20px;display:inline-block}
+
+/* Feed / actions */
+.action-btn{display:inline-flex;align-items:center;gap:8px;padding:8px 10px;border-radius:8px;background:transparent;border:1px solid var(--border);cursor:pointer;color:var(--muted);font-weight:600}
+.action-btn:hover{background:var(--focus);color:var(--text)}
+.action-btn.liked{color:var(--accent);border-color:transparent;background:linear-gradient(90deg,var(--accent),var(--accent-2));color:white}
+.photo-actions{display:flex;gap:8px;padding:12px;border-top:1px solid var(--border);align-items:center}
+.photo-caption{padding:12px 16px;color:var(--text)}
+.comments-section{padding:12px;border-top:1px solid var(--border);background:transparent}
+.comment-form{display:flex;gap:8px;margin-top:8px}
+.comment-input{flex:1;padding:8px;border-radius:8px;border:1px solid var(--border);background:transparent;color:var(--text)}
+.comment-btn{padding:8px 10px;border-radius:8px;border:none;background:var(--accent);color:white;font-weight:700;cursor:pointer}
+
+
+.form-group{margin-bottom:16px}
+label{display:block;margin-bottom:6px;color:var(--muted);font-weight:600}
+input[type="text"],input[type="email"],input[type="password"],textarea{width:100%;padding:12px;border:1px solid var(--border);border-radius:8px;background:transparent;color:var(--text)}
+input:focus,textarea:focus{outline:none;box-shadow:0 0 0 6px var(--focus);border-color:var(--accent)}
+
+.card{background:var(--card);padding:16px;border-radius:8px;border:1px solid var(--border)}
+
+.text-muted{color:var(--muted)}
+.small{font-size:0.9rem}
+.error{color:var(--danger)}
+.success{color:var(--success)}
+
+/* Utilities */
+.flex{display:flex}
+.space-between{justify-content:space-between}
+.center{display:flex;align-items:center;justify-content:center}
+
+/* Feed specifics */
+.feed-item{background:var(--card);border-radius:8px;margin-bottom:20px;overflow:hidden;border:1px solid var(--border)}
+.photo-header{padding:12px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center}
+.avatar{width:40px;height:40px;border-radius:50%;background:var(--accent);color:white;display:flex;align-items:center;justify-content:center;font-weight:700}
+.photo-image{width:100%;height:auto;display:block}
+
+/* 2FA and small screens */
+@media (max-width:640px){.container{padding:18px}}
+
+/* Auth / landing helpers */
+.auth-body{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:28px;background:#060607;color:var(--text)}
+.auth-body .auth-card{background:rgba(255,255,255,0.03);border-radius:12px;box-shadow:0 18px 60px rgba(0,0,0,0.5);max-width:520px;width:100%;padding:36px;border:1px solid rgba(255,255,255,0.04);backdrop-filter: blur(8px);}
+
+/* Ensure header is minimal and not colorful on auth pages */
+.auth-body .header{background:transparent;box-shadow:none;padding:8px 16px;border-radius:8px;margin-bottom:18px}
+.auth-body .header .logo{color:var(--text)}
+
+/* Place minimal logo in top-right and remove nav items on auth pages so the card is truly centered */
+.auth-body .header{position:fixed;top:16px;left:20px;right:auto;margin:0;width:auto;display:flex;justify-content:flex-start;align-items:center;z-index:99;padding:8px 12px}
+.auth-body .nav-links{display:none}
+.auth-body .header .logo{color:var(--text);font-weight:800;text-decoration:none}
+
+/* Buttons on auth page should be subtle and monochrome */
+.auth-body .btn-primary{background:linear-gradient(90deg,#111,#1b1b1b);box-shadow:none;color:#fff}
+.auth-body .btn-primary:hover{transform:none;opacity:0.98}
+.auth-body .btn-oauth{background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.04);color:var(--text);box-shadow:none}
+
+/* Make sure inputs are visible on dark background */
+.auth-body input[type="text"],.auth-body input[type="password"],.auth-body textarea{background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.04);color:var(--text)}
+
+/* Responsive tweaks: keep it centered on small screens */
+@media (max-width:640px){
+  .auth-card{padding:20px;margin:12px;border-radius:10px}
+}
+.auth-card .header h1{color:var(--accent);margin-bottom:0}
+.auth-card .links{margin-top:18px;text-align:center}

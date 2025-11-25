@@ -187,6 +187,22 @@ export async function initializeDb() {
   } catch (err) {
     console.error('Error creating verifications table:', err);
   }
+
+  // Backup / single-use recovery codes for TOTP
+  try {
+    await dbRun(`
+      CREATE TABLE IF NOT EXISTS backup_codes (
+        id TEXT PRIMARY KEY,
+        userId TEXT NOT NULL,
+        code TEXT NOT NULL,
+        used INTEGER DEFAULT 0,
+        createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (userId) REFERENCES users(id) ON DELETE CASCADE
+      )
+    `);
+  } catch (err) {
+    console.error('Error creating backup_codes table:', err);
+  }
 }
 
 // User operations
@@ -465,6 +481,35 @@ export const verifications = {
 
   deleteByUserId: async (userId) => {
     await dbRun('DELETE FROM verifications WHERE userId = ?', [userId]);
+  }
+};
+
+// Backup / recovery codes (single-use) for TOTP
+export const backupCodes = {
+  create: async (id, userId, code) => {
+    const sql = `INSERT INTO backup_codes (id, userId, code) VALUES (?, ?, ?)`;
+    await dbRun(sql, [id, userId, code]);
+  },
+
+  findByUser: async (userId) => {
+    return await dbAll('SELECT * FROM backup_codes WHERE userId = ? ORDER BY createdAt DESC', [userId]);
+  },
+
+  getUnusedByUser: async (userId) => {
+    return await dbAll('SELECT * FROM backup_codes WHERE userId = ? AND used = 0 ORDER BY createdAt DESC', [userId]);
+  },
+
+  // keep legacy name (returns unused by user, comparison should be done by caller if codes are hashed)
+  findValidByUserAndCode: async (userId, code) => {
+    return await dbAll('SELECT * FROM backup_codes WHERE userId = ? AND used = 0 ORDER BY createdAt DESC', [userId]);
+  },
+
+  markUsed: async (id) => {
+    await dbRun('UPDATE backup_codes SET used = 1 WHERE id = ?', [id]);
+  },
+
+  deleteByUser: async (userId) => {
+    await dbRun('DELETE FROM backup_codes WHERE userId = ?', [userId]);
   }
 };
 

@@ -4,17 +4,14 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Reset Email Sent</title>
-  <style>
-    body { font-family: system-ui, sans-serif; background: #f5f7fb; display:flex;align-items:center;justify-content:center;height:100vh;margin:0 }
-    .card{background:#fff;padding:28px;border-radius:8px;box-shadow:0 6px 20px rgba(0,0,0,0.08);width:360px;text-align:center}
-    a{color:#667eea}
-  </style>
+  <link rel="stylesheet" href="/css/theme.css">
 </head>
 <body>
-  <div class="card">
+  <%- include('partials/header') %>
+  <div class="auth-card" style="text-align:center;max-width:420px;margin:28px auto;padding:28px">
     <h2>Check your email</h2>
     <p>If an account exists for that email, a password reset link has been sent.</p>
-    <p><a href="/login">Return to login</a></p>
+    <p><a class="btn ghost" href="/login">Return to login</a></p>
   </div>
 </body>
 </html>

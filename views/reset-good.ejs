@@ -4,71 +4,16 @@
   <meta charset="UTF-8" />
   <title>Password Reset Successful – VibeNest</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <link rel="stylesheet" href="/style.css" />
-  <style>
-    body {
-      background: linear-gradient(135deg, #121212, #1e1e2f);
-      color: #e0e0e0;
-      font-family: 'Arial', sans-serif;
-      display: flex;
-      justify-content: center;
-      align-items: center;
-      min-height: 100vh;
-      margin: 0;
-      padding: 20px;
-    }
-
-    .card {
-      background-color: #1c1c1c;
-      border-radius: 12px;
-      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.6);
-      max-width: 400px;
-      width: 100%;
-      padding: 30px;
-      box-sizing: border-box;
-      text-align: center;
-    }
-
-    h1 {
-      color: #00c3ff;
-      font-size: 24px;
-      margin-bottom: 20px;
-    }
-
-    p {
-      font-size: 16px;
-      color: #cccccc;
-      margin-bottom: 30px;
-    }
-
-    .login-btn {
-      background-color: #00c3ff;
-      color: #121212;
-      border: none;
-      padding: 12px 24px;
-      border-radius: 6px;
-      font-weight: bold;
-      text-decoration: none;
-      display: inline-block;
-      transition: background-color 0.2s ease;
-    }
-
-    .login-btn:hover {
-      background-color: #009ac7;
-    }
-
-    @media screen and (max-width: 480px) {
-      .card {
-        padding: 20px;
-      }
-    }
-  </style>
+  <link rel="stylesheet" href="/css/theme.css" />
 </head>
 <body>
-  <div class="card">
-    <h1>Password Updated</h1>
-    <p>Your password has been successfully reset. You can now log in using your new credentials.</p>
-    <a href="/login" class="login-btn">Go to Login</a>
+  <%- include('partials/header') %>
+  <div class="auth-card" style="text-align:center">
+    <div class="header"><h1>Password Updated</h1></div>
+    <div class="message" style="margin-top:8px;">Your password has been successfully reset. You can now log in using your new credentials.</div>
+    <div style="margin-top:16px">
+      <a class="btn btn-primary" href="/login">Go to Login</a>
+    </div>
   </div>
 </body>
 </html>

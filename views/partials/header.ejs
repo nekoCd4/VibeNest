@@ -1,0 +1,51 @@
+<header class="header">
+  <div style="display:flex;align-items:center;gap:12px">
+    <a href="/" class="logo" style="text-decoration:none;color:var(--accent);font-weight:800;font-size:20px">VibeNest</a>
+  </div>
+
+  <div class="nav-links">
+    <% if (user) { %>
+      <span class="small muted">Hi, <%= user.displayName %></span>
+      <a class="btn ghost" href="/">Feed</a>
+      <a class="btn ghost" href="/upload">Upload</a>
+
+      <div class="dropdown" style="position:relative">
+        <button class="btn ghost dropdown-toggle" aria-haspopup="true" aria-expanded="false">Settings ▾</button>
+        <div class="dropdown-menu" role="menu" aria-hidden="true" style="display:none;position:absolute;right:0;min-width:200px;z-index:90">
+          <a class="dropdown-item" href="/settings">Account settings</a>
+          <a class="dropdown-item" href="/setup-2fa">Two-factor (2FA)</a>
+          <a class="dropdown-item" href="/resend-verification">Resend verification</a>
+          <a class="dropdown-item" href="/support">Support</a>
+          <% if (user && user.isAdmin) { %>
+            <a class="dropdown-item" href="/admin/resend-verification">Admin → Resend verification</a>
+          <% } %>
+        </div>
+      </div>
+
+      <form action="/logout" method="GET" style="margin:0">
+        <button type="submit" class="btn-outline">Logout</button>
+      </form>
+    <% } else { %>
+      <!-- Unauthenticated: show only the logo (no Login/Register links) -->
+    <% } %>
+
+    <!-- Theme is controlled from Settings (universal). Removed per-page emoji toggle. -->
+  </div>
+
+  <script>
+    // Dropdown behavior: simple toggle
+    (function(){
+      const toggle = document.querySelector('.dropdown-toggle');
+      if (!toggle) return;
+      const menu = toggle.parentNode.querySelector('.dropdown-menu');
+      toggle.addEventListener('click', (e) => {
+        const visible = menu.style.display === 'block';
+        menu.style.display = visible ? 'none' : 'block';
+        toggle.setAttribute('aria-expanded', !visible);
+      });
+      document.addEventListener('click', (e) => {
+        if (!toggle.contains(e.target) && !menu.contains(e.target)) menu.style.display = 'none';
+      });
+    })();
+  </script>
+</header>

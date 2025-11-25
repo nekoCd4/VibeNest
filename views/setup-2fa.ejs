@@ -163,13 +163,33 @@
     }
   </style>
 </head>
-<body>
+  <body>
+  <%- include('partials/header') %>
   <div class="container">
     <h2>Setup Two-Factor Authentication</h2>
     <p>Choose your preferred method of two-factor authentication.</p>
 
     <% if (error) { %>
       <div class="error-message"><%= error %></div>
+    <% } %>
+    <% if (message) { %>
+      <div style="color: #8ae6a3; margin: 12px 0; font-weight:600"><%= message %></div>
+    <% } %>
+
+    <% if (typeof plainCodes !== 'undefined' && plainCodes && plainCodes.length) { %>
+      <div class="card" style="padding:12px;margin:12px 0;border-radius:8px;">
+        <h3 style="margin:0 0 8px 0">Your backup / recovery codes (save them now)</h3>
+        <p class="small muted">These codes are shown only once. Store them somewhere safe — each code is single-use.</p>
+        <ul style="margin-top:8px;text-align:left">
+            <% plainCodes.forEach(code => { %>
+            <li style="font-family:monospace;margin:6px 0"><%= code %></li>
+          <% }) %>
+        </ul>
+        <div style="display:flex;gap:8px;margin-top:8px">
+          <button id="download-codes" class="btn ghost">Download</button>
+          <button id="copy-codes" class="btn">Copy</button>
+        </div>
+      </div>
     <% } %>
 
     <div class="tabs">
@@ -191,6 +211,7 @@
       <div class="secret-key"><%= secret %></div>
 
       <form action="/setup-2fa" method="POST">
+        <input type="hidden" name="secret" value="<%= secret %>">
         <div class="form-group">
           <label for="token">Authenticator Code</label>
           <input type="text" id="token" name="token" required maxlength="6" autocomplete="off" />
@@ -233,6 +254,26 @@
         });
       });
     });
+  </script>
+  <script>
+    // Download / copy helpers for one-time codes display
+    (function(){
+      const download = document.getElementById('download-codes');
+      const copyBtn = document.getElementById('copy-codes');
+      if (!download && !copyBtn) return;
+      const codes = <%- JSON.stringify(typeof plainCodes !== 'undefined' ? plainCodes : []) %>;
+      if (download) download.addEventListener('click', () => {
+        const blob = new Blob([codes.join('\n')], { type: 'text/plain' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = 'vibenest-backup-codes.txt';
+        document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+      });
+      if (copyBtn) copyBtn.addEventListener('click', async () => {
+        try { await navigator.clipboard.writeText(codes.join('\n')); copyBtn.textContent = 'Copied'; setTimeout(()=>copyBtn.textContent='Copy',2000); }
+        catch(e){ alert('Copy failed — please copy manually'); }
+      });
+    })();
   </script>
 </body>
 </html>

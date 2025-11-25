@@ -46,6 +46,7 @@
   </style>
 </head>
 <body>
+  <%- include('partials/header') %>
   <div class="container">
     <div class="card">
       <header>
@@ -65,7 +66,7 @@
       <% if (flash && flash.error) { %>
         <div class="flash error"><%= flash.error %></div>
       <% } %>
-<a href="/login" style="display: block; margin-top: 8px;">Back to Home</a>
+          <a class="btn ghost" href="/login" style="display:inline-block;margin-top:8px">Back to Home</a>
       <div class="grid">
         <!-- LEFT: Form -->
         <div>
