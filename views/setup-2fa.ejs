@@ -218,6 +218,27 @@
         </div>
         <button type="submit">Enable 2FA</button>
       </form>
+
+      <hr style="margin:20px 0;border:none;border-top:1px solid var(--border)">
+
+      <section aria-labelledby="backup-codes">
+        <h3 id="backup-codes" style="margin-bottom:8px">Backup / recovery codes</h3>
+        <p class="small muted">Generate a set of single-use recovery codes. Each code can be used once if you lose access to your authenticator app.</p>
+        <div style="margin-top:12px;display:flex;gap:8px;align-items:center">
+          <button id="genBackup" type="button" class="btn btn-outline">Generate backup codes</button>
+          <span class="small muted" id="backupNotice">Codes are shown only once — save them.</span>
+        </div>
+
+        <div id="backupBox" style="display:none;margin-top:12px">
+          <div class="card" style="padding:12px;word-break:break-all">
+            <div class="small muted">Your recovery codes (save them now — you'll only see them once):</div>
+            <ul id="backupList" style="margin-top:8px;list-style:none;padding:0;display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px"></ul>
+            <div style="margin-top:8px;text-align:right">
+              <button type="button" id="copyCodes" class="btn ghost">Copy all</button>
+            </div>
+          </div>
+        </div>
+      </section>
     </div>
 
     <!-- Email 2FA -->
@@ -254,6 +275,49 @@
         });
       });
     });
+  </script>
+  <script>
+    // Generate backup codes via API and show them (client-side)
+    (function(){
+      const genBtn = document.getElementById('genBackup');
+      const box = document.getElementById('backupBox');
+      const list = document.getElementById('backupList');
+      const copyAll = document.getElementById('copyCodes');
+      if (!genBtn) return;
+
+      genBtn.addEventListener('click', async () => {
+        genBtn.disabled = true;
+        genBtn.textContent = 'Generating…';
+        try {
+          const resp = await fetch('/api/2fa/backup-codes/regenerate', { method: 'POST', headers: { 'Content-Type':'application/json' } });
+          const data = await resp.json();
+          if (!data.success) throw new Error(data.error || 'Failed');
+          const codes = data.codes || [];
+          // populate list
+          list.innerHTML = '';
+          codes.forEach(c => {
+            const li = document.createElement('li');
+            li.textContent = c;
+            li.style.fontFamily = 'monospace';
+            li.style.padding = '6px';
+            li.style.border = '1px dashed var(--border)';
+            li.style.borderRadius = '6px';
+            li.style.background = 'linear-gradient(180deg, rgba(0,0,0,0.02), transparent)';
+            list.appendChild(li);
+          });
+          box.style.display = 'block';
+          copyAll.addEventListener('click', async () => {
+            try { await navigator.clipboard.writeText(codes.join('\n')); copyAll.textContent = 'Copied'; setTimeout(()=>copyAll.textContent='Copy all', 2000); }
+            catch(e){ alert('Copy failed — copy manually shown codes'); }
+          });
+        } catch (e) {
+          alert('Failed to generate codes: ' + (e.message || e));
+        } finally {
+          genBtn.disabled = false;
+          genBtn.textContent = 'Generate backup codes';
+        }
+      });
+    })();
   </script>
   <script>
     // Download / copy helpers for one-time codes display

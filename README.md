@@ -109,6 +109,30 @@ npm run dev
 
 If you want me to add automated tests or provide a small demo script that exercises these flows automatically, I can add that next.
 
+## Supabase schema & quick setup
+
+I added a starter SQL schema for VibeNest under `scripts/supabase_schema.sql` — it creates core tables (profiles, photos, videos, likes, comments, backup_codes).
+
+How to apply the schema:
+
+- In the Supabase dashboard, open your project → SQL Editor → click "New query" → paste the contents of `scripts/supabase_schema.sql` and run it.
+- Create a Storage bucket (Settings → Storage → Buckets) called `vibenest-uploads` or any name you prefer, then use that name as `SUPABASE_BUCKET` in `.env`.
+
+Security / RLS guidance:
+- For production you should enable Row Level Security (RLS) on your tables and add policies so that users can only read/write their own rows when using the public anon key.
+- Use the `SUPABASE_SERVICE_ROLE_KEY` on the server to perform admin operations and bypass RLS when required (only server-side code should have this key).
+
+For a simple dev flow the SQL editor + anon key is enough to start testing, then later install the service role key in `.env` for server integrations.
+
+### Backup / recovery codes API (Supabase)
+
+I added server endpoints to manage single-use backup codes that are stored in Supabase (hashed) so they are secure and single-use.
+
+- POST /api/2fa/backup-codes/regenerate (authenticated): generates 10 new codes, stores hashed values in `backup_codes` table and returns the plaintext codes in the response (shown once to the user).
+- POST /2fa-verify-backup: verifies a single-use code during an in-progress 2FA login (uses `req.session.twoFactor.userId`) and consumes it if valid.
+
+These endpoints use the `SUPABASE_SERVICE_ROLE_KEY` (server-only) to write/read the `backup_codes` table; add it to `.env` before testing.
+
 ## Mailjet integration
 - The app uses Mailjet for all email sending (verification, password reset, support).
 - If Mailjet credentials are not provided, it will fall back to SMTP or log emails to the console for development.

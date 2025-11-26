@@ -1,6 +1,156 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>VibeNest - Register</title>
+  <link rel="stylesheet" href="/css/theme.css" />
+</head>
+<body class="auth-body">
+  <%- include('partials/header', { user: user }) %>
+
+  <div class="auth-card">
+    <div style="margin-bottom:18px">
+      <h1 style="margin:0 0 8px 0;font-size:26px">VibeNest</h1>
+      <div class="small muted">Join the community</div>
+    </div>
+
+    <% if (message) { %>
+      <div class="message"><%= message %></div>
+    <% } %>
+
+    <form method="POST" action="/register" class="register-form" style="display:grid;gap:12px">
+      <div class="form-group">
+        <label for="displayName">Display Name</label>
+        <input type="text" id="displayName" name="displayName" required />
+      </div>
+
+      <div class="form-group">
+        <label for="username">Username</label>
+        <input type="text" id="username" name="username" required />
+      </div>
+
+      <div class="form-group">
+        <label for="email">Email</label>
+        <input type="email" id="email" name="email" required />
+      </div>
+
+      <div class="form-group">
+        <label for="password">Password</label>
+        <input type="password" id="password" name="password" required />
+      </div>
+
+      <div class="form-group">
+        <label for="confirmPassword">Confirm Password</label>
+        <input type="password" id="confirmPassword" name="confirmPassword" required />
+      </div>
+
+      <button type="submit" class="btn btn-primary">Create Account</button>
+    </form>
+
+    <% if ((typeof GOOGLE_OAUTH !== 'undefined' && GOOGLE_OAUTH) || (typeof ENTRA_OAUTH !== 'undefined' && ENTRA_OAUTH)) { %>
+      <div class="divider" style="text-align:center;margin:18px 0"><span>or</span></div>
+      <div class="oauth-buttons">
+        <% if ((typeof GOOGLE_OAUTH !== 'undefined' && GOOGLE_OAUTH)) { %>
+          <a class="btn btn-oauth" href="/auth/google">Sign up with Google</a>
+        <% } %>
+        <% if (typeof ENTRA_OAUTH !== 'undefined' && ENTRA_OAUTH) { %>
+          <a class="btn btn-oauth" href="/auth/entra">Sign up with Entra ID</a>
+        <% } %>
+      </div>
+    <% } %>
+
+    <div class="links">Already have an account? <a href="/login">Sign in</a></div>
+  </div>
+
+  <script src="/js/theme-toggle.js"></script>
+
+  <% if (locals.SUPABASE_ANON_KEY && locals.SUPABASE_ANON_KEY.length) { %>
+  <script>
+    window.SUPABASE_URL = "<%= process.env.SUPABASE_URL || '' %>";
+    window.SUPABASE_ANON_KEY = "<%= locals.SUPABASE_ANON_KEY %>";
+  </script>
+  <script type="module" src="/js/supabase-auth.js"></script>
+  <% } %>
+</body>
+</html>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VibeNest - Register</title>
+    <link rel="stylesheet" href="/css/theme.css">
+</head>
+<body class="auth-body">
+  <%- include('partials/header', { user: user }) %>
+  <div class="auth-card">
+    <div style="margin-bottom:18px">
+      <h1 style="margin:0 0 8px 0;font-size:26px">VibeNest</h1>
+      <div class="small muted">Join the community</div>
+    </div>
+
+    <% if (message) { %>
+      <div class="message"><%= message %></div>
+    <% } %>
+
+    <form method="POST" action="/register" class="register-form" style="display:grid;gap:12px">
+      <div class="form-group">
+        <label for="displayName">Display Name</label>
+        <input type="text" id="displayName" name="displayName" required>
+      </div>
+
+      <div class="form-group">
+        <label for="username">Username</label>
+        <input type="text" id="username" name="username" required>
+      </div>
+
+      <div class="form-group">
+        <label for="email">Email</label>
+        <input type="email" id="email" name="email" required>
+      </div>
+
+      <div class="form-group">
+        <label for="password">Password</label>
+        <input type="password" id="password" name="password" required>
+      </div>
+
+      <div class="form-group">
+        <label for="confirmPassword">Confirm Password</label>
+        <input type="password" id="confirmPassword" name="confirmPassword" required>
+      </div>
+
+      <button type="submit" class="btn btn-primary">Create Account</button>
+    </form>
+
+    <% if ((typeof GOOGLE_OAUTH !== 'undefined' && GOOGLE_OAUTH) || (typeof ENTRA_OAUTH !== 'undefined' && ENTRA_OAUTH)) { %>
+      <div class="divider" style="text-align:center;margin:18px 0"><span>or</span></div>
+      <div class="oauth-buttons">
+        <% if ((typeof GOOGLE_OAUTH !== 'undefined' && GOOGLE_OAUTH)) { %>
+          <a class="btn btn-oauth" href="/auth/google">Sign up with Google</a>
+        <% } %>
+        <% if (typeof ENTRA_OAUTH !== 'undefined' && ENTRA_OAUTH) { %>
+          <a class="btn btn-oauth" href="/auth/entra">Sign up with Entra ID</a>
+        <% } %>
+      </div>
+    <% } %>
+
+    <div class="links">Already have an account? <a href="/login">Sign in</a></div>
+  </div>
+
+  <script src="/js/theme-toggle.js"></script>
+  <% if (locals.SUPABASE_ANON_KEY && locals.SUPABASE_ANON_KEY.length) { %>
+  <script>
+    window.SUPABASE_URL = '<%= process.env.SUPABASE_URL || '' %>';
+    window.SUPABASE_ANON_KEY = '<%= locals.SUPABASE_ANON_KEY %>';
+  </script>
+  <script type="module" src="/js/supabase-auth.js"></script>
+  <% } %>
+</body>
+</html>
+<!DOCTYPE html>
+<html lang="en">
+<head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>VibeNest - Register</title>

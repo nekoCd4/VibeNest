@@ -69,5 +69,12 @@
         </div>
     </div>
     <script src="/js/theme-toggle.js"></script>
+        <% if (locals.SUPABASE_ANON_KEY && locals.SUPABASE_ANON_KEY.length) { %>
+        <script>
+            window.SUPABASE_URL = '<%= process.env.SUPABASE_URL || '' %>';
+            window.SUPABASE_ANON_KEY = '<%= locals.SUPABASE_ANON_KEY %>';
+        </script>
+        <script type="module" src="/js/supabase-auth.js"></script>
+        <% } %>
 </body>
 </html>

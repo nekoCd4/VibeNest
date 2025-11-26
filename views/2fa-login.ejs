@@ -90,6 +90,15 @@
     <div class="text-center mt-4">
       <a href="/login" class="text-blue-400 hover:underline">Back to Login</a>
     </div>
+
+    <div style="max-width:420px;margin:18px auto;text-align:center">
+      <hr style="margin:18px 0;border:none;border-top:1px solid rgba(255,255,255,0.06)">
+      <p class="text-sm text-gray-400">Have a single-use backup code instead?</p>
+      <form action="/2fa-verify-backup" method="POST" style="display:flex;gap:8px;align-items:center;justify-content:center;margin-top:8px">
+        <input name="backupCode" placeholder="Enter backup code" required maxlength="32" class="w-[60%] px-3 py-2 rounded-md bg-gray-200 text-gray-900 border border-gray-400" />
+        <button type="submit" class="px-4 py-2 rounded-md bg-yellow-500 text-black font-semibold hover:bg-yellow-600">Use code</button>
+      </form>
+    </div>
   </div>
 
   <script src="/js/webauthn.js"></script>

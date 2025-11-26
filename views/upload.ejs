@@ -42,11 +42,53 @@
                 <textarea id="caption" name="caption" placeholder="What's on your mind?"></textarea>
             </div>
 
-            <button type="submit" class="btn btn-primary">
+            <button type="submit" id="uploadBtn" class="btn btn-primary">
                 <span class="loading" id="loading">Uploading...</span>
                 <span id="buttonText">Upload Photo</span>
             </button>
-        </form>
+                </form>
+                <script>
+                    // Choose upload target: use Supabase upload endpoint when server reports SUPABASE_ENABLED
+                    const SUPABASE_ENABLED = <%= JSON.stringify(typeof SUPABASE_ENABLED !== 'undefined' ? SUPABASE_ENABLED : false) %>;
+                    const uploadForm = document.getElementById('uploadForm');
+                    const uploadBtn = document.getElementById('uploadBtn');
+
+                    uploadForm.addEventListener('submit', async (e) => {
+                        e.preventDefault();
+                        if (!fileInput.files.length) {
+                            fileError.textContent = 'Please select a photo';
+                            return;
+                        }
+
+                        const formData = new FormData();
+                        formData.append('photo', fileInput.files[0]);
+                        formData.append('caption', document.getElementById('caption').value || '');
+
+                        // Choose endpoint
+                        const url = SUPABASE_ENABLED ? '/api/upload-supabase' : '/api/upload';
+
+                        loading.classList.add('show');
+                        buttonText.style.display = 'none';
+                        try {
+                            const resp = await fetch(url, { method: 'POST', body: formData });
+                            if (resp.ok) {
+                                form.reset();
+                                previewContainer.classList.remove('show');
+                                fileLabel.classList.remove('has-file');
+                                successMessage.style.display = 'block';
+                                setTimeout(() => successMessage.style.display = 'none', 4000);
+                            } else {
+                                const json = await resp.json().catch(()=>({ error: 'Upload failed' }));
+                                fileError.textContent = json.error || 'Upload failed';
+                            }
+                        } catch (err) {
+                            fileError.textContent = err.message || 'Upload error';
+                        } finally {
+                            loading.classList.remove('show');
+                            buttonText.style.display = 'inline';
+                        }
+                    });
+                </script>
     </div>
 
     <script>

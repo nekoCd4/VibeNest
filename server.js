@@ -12,6 +12,8 @@ import MicrosoftStrategy from 'passport-microsoft';
 import { authenticator } from 'otplib';
 import QRCode from 'qrcode';
 import dotenv from 'dotenv';
+import supabaseAdmin from './lib/supabaseServer.js';
+import supabaseDb from './lib/supabaseDb.js';
 import { initializeDb, users, photos, likes, comments, videos, videoLikes, videoComments, passwordResets, verifications, backupCodes } from './db.js';
 import crypto from 'crypto';
 import nodemailer from 'nodemailer';
@@ -50,6 +52,11 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static(join(__dirname, 'public')));
 app.use('/uploads', express.static(join(__dirname, 'uploads')));
+
+// Expose whether Supabase is configured for views/clients
+app.locals.SUPABASE_ENABLED = !!(process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY && process.env.SUPABASE_BUCKET);
+app.locals.SUPABASE_BUCKET = process.env.SUPABASE_BUCKET || null;
+app.locals.SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || null;
 
 // Session middleware
 app.use(session({
@@ -100,6 +107,16 @@ const upload = multer({
   }
 });
 
+// memory storage variant for direct-to-supabase uploads
+const uploadMemory = multer({ storage: multer.memoryStorage(),
+  fileFilter: (req, file, cb) => {
+    const isImage = file.mimetype.startsWith('image/');
+    const isVideo = file.mimetype.startsWith('video/');
+    if (isImage || isVideo) cb(null, true);
+    else cb(new Error('Only image and video files allowed'));
+  }
+});
+
 // Support form uploader (allow broader file types, store in uploads)
 const supportUpload = multer({ dest: join(__dirname, 'uploads') });
 
@@ -128,8 +145,8 @@ app.locals.NODE_ENV = process.env.NODE_ENV || 'development';
 passport.use(new LocalStrategy.Strategy(async (username, password, done) => {
   try {
     // Support login by username OR email
-    let user = await users.findByUsername(username);
-    if (!user) user = await users.findByEmail(username);
+    let user = await store.users.findByUsername(username);
+    if (!user) user = await store.users.findByEmail(username);
     if (!user) return done(null, false, { message: 'Invalid credentials' });
 
     // When user registered via OAuth there may be no password
@@ -153,7 +170,7 @@ passport.use(new GoogleStrategy.Strategy(
   },
   async (accessToken, refreshToken, profile, done) => {
     try {
-      let user = await users.findByEmail(profile.emails[0].value);
+      let user = await store.users.findByEmail(profile.emails[0].value);
       if (!user) {
         user = {
           id: uuidv4(),
@@ -164,10 +181,10 @@ passport.use(new GoogleStrategy.Strategy(
           authProvider: 'google',
           verified: 1 // OAuth users are trusted — mark verified
         };
-        await users.create(user);
+        await store.users.create(user);
       } else if (!user.verified) {
         // Ensure existing OAuth users are marked verified
-        await users.update(user.id, { verified: 1 });
+        await store.users.update(user.id, { verified: 1 });
         user.verified = 1;
       }
       return done(null, user);
@@ -193,7 +210,7 @@ passport.use(new MicrosoftStrategy.Strategy(
                     profile.userPrincipalName ||
                     `${profile.displayName.replace(/\s+/g, '').toLowerCase()}@entra.local`;
       
-      let user = await users.findByEmail(email);
+      let user = await store.users.findByEmail(email);
       if (!user) {
         user = {
           id: uuidv4(),
@@ -203,9 +220,9 @@ passport.use(new MicrosoftStrategy.Strategy(
           authProvider: 'entra',
           verified: 1 // OAuth users are trusted — mark verified
         };
-        await users.create(user);
+        await store.users.create(user);
       } else if (!user.verified) {
-        await users.update(user.id, { verified: 1 });
+        await store.users.update(user.id, { verified: 1 });
         user.verified = 1;
       }
       return done(null, user);
@@ -222,7 +239,7 @@ passport.serializeUser((user, done) => {
 
 passport.deserializeUser(async (id, done) => {
   try {
-    const user = await users.findById(id);
+    const user = await store.users.findById(id);
     done(null, user);
   } catch (err) {
     done(err);
@@ -238,6 +255,9 @@ const isAuthenticated = (req, res, next) => {
   }
   res.redirect('/login');
 };
+
+// Choose a data store implementation: prefer Supabase (if configured) otherwise local sqlite
+const store = supabaseAdmin ? supabaseDb : { users, photos, likes, comments, videos, videoLikes, videoComments, passwordResets, verifications, backupCodes };
 
 let smtpTransporter;
 let consoleTransporter = {
@@ -267,13 +287,140 @@ const sendMail = async (opts) => {
 // Routes
 // ====================
 
+// Quick Supabase health check (requires SUPABASE_SERVICE_ROLE_KEY)
+app.get('/api/supabase/health', async (req, res) => {
+  try {
+    if (!supabaseAdmin) return res.status(503).json({ ok: false, error: 'Supabase server client not configured' });
+    // Try a lightweight query - depends on schema existence
+    const { data, error } = await supabaseAdmin.from('profiles').select('id').limit(1);
+    if (error) return res.status(500).json({ ok: false, error: error.message || error });
+    return res.json({ ok: true, sample: data || [] });
+  } catch (err) {
+    console.error('Supabase health error:', err);
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// Bridge for client-side Supabase auth -> server session
+app.post('/auth/supabase/session', async (req, res) => {
+  try {
+    const { access_token, userId } = req.body || {};
+
+    // If we have an access token and supabase server is available, try to verify and fetch user
+    let supaUser = null;
+    if (supabaseAdmin && access_token) {
+      try {
+        // supabaseAdmin.auth.getUser expects an object param in newer SDKs; support both shapes
+        let resp;
+        try {
+          resp = await supabaseAdmin.auth.getUser(access_token);
+        } catch (e) {
+          // fallback to object shape
+          resp = await supabaseAdmin.auth.getUser({ access_token });
+        }
+        supaUser = (resp && (resp.data && resp.data.user)) || resp.user || null;
+      } catch (e) {
+        console.warn('Unable to fetch supabase user by token:', e && e.message);
+      }
+    }
+
+    // If client provided only userId, or token resolved to an id, try to use that
+    const targetId = (supaUser && supaUser.id) || userId;
+
+    if (!targetId) return res.status(400).json({ error: 'Missing supabase access token or userId' });
+
+    // Try to find a local user mapping first
+    let localUser = await store.users.findById(targetId);
+
+    // If not found locally, and supabaseAdmin can fetch user info, create a local mapping
+    if (!localUser && supabaseAdmin) {
+      try {
+        // Attempt to fetch the user record via admin API (getUserById may exist)
+        let fetched = null;
+        try {
+          const adminResp = await supabaseAdmin.auth.admin.getUserById(targetId);
+          fetched = (adminResp && adminResp.user) || adminResp;
+        } catch (e) {
+          // fallback to fetching via profiles table
+          const { data: pData, error: pErr } = await supabaseAdmin.from('profiles').select('username,display_name').eq('id', targetId).limit(1).single();
+          if (!pErr && pData) fetched = { id: targetId, user_metadata: { username: pData.username, displayName: pData.display_name } };
+        }
+        if (fetched) {
+          const email = fetched.email || (fetched.user_metadata && fetched.user_metadata.email) || null; // might be missing
+          const username = (fetched.user_metadata && (fetched.user_metadata.username || fetched.user_metadata.displayName)) || `supa-${targetId.slice(0,8)}`;
+          localUser = {
+            id: targetId,
+            uid: targetId,
+            username: username,
+            email: email || `${username}@local.invalid`,
+            displayName: fetched.user_metadata && (fetched.user_metadata.displayName || fetched.user_metadata.display_name) || username,
+            authProvider: 'supabase'
+          };
+          // persist mapping so future lookups succeed
+          try { await store.users.create(localUser); } catch (e) { /* ignore create errors */ }
+        }
+      } catch (e) {
+        console.error('Error ensuring local mapping for supabase user:', e && e.message);
+      }
+    }
+
+    if (!localUser) return res.status(404).json({ error: 'User not found locally' });
+
+    // Log the user in via express/passport session
+    req.logIn(localUser, (err) => {
+      if (err) return res.status(500).json({ error: 'Failed to create session' });
+      return res.json({ ok: true, user: { id: localUser.id, username: localUser.username, email: localUser.email } });
+    });
+  } catch (err) {
+    console.error('Session bridge error:', err && err.message);
+    return res.status(500).json({ error: 'Internal error' });
+  }
+});
+
+// Resolve usernames (frontend can query to turn username -> email for supabase sign-in)
+app.get('/api/resolve-username', async (req, res) => {
+  try {
+    const username = req.query.username;
+    if (!username) return res.status(400).json({ error: 'Missing username' });
+
+    // Try local DB first
+    const local = await store.users.findByUsername(username);
+    if (local && local.email) return res.json({ email: local.email });
+
+    // Next, if Supabase admin client is available, look up the profile and attempt to fetch auth user
+    if (supabaseAdmin) {
+      try {
+        const { data: profileData, error: profileErr } = await supabaseAdmin.from('profiles').select('id').eq('username', username).limit(1).single();
+        if (!profileErr && profileData && profileData.id) {
+          // Try to fetch auth.user by id using admin API
+          try {
+            const adminResp = await supabaseAdmin.auth.admin.getUserById(profileData.id);
+            const fetchedUser = (adminResp && (adminResp.user || adminResp.data)) || adminResp;
+            if (fetchedUser && fetchedUser.email) return res.json({ email: fetchedUser.email });
+          } catch (e) {
+            console.warn('Could not fetch auth user by id (admin.getUserById not supported?):', e && e.message);
+          }
+        }
+      } catch (e) {
+        console.warn('Error resolving username via Supabase:', e && e.message);
+      }
+    }
+
+    // Not found
+    return res.status(404).json({ error: 'Username not found' });
+  } catch (err) {
+    console.error('resolve-username error:', err && err.message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 // Home / Feed
 app.get('/', async (req, res) => {
   try {
     // If user is not authenticated, send them to the login page instead
     if (!req.isAuthenticated()) return res.redirect('/login');
-    const allPhotos = await photos.getAll();
-    const allVideos = await videos.getAll();
+    const allPhotos = await store.photos.getAll();
+    const allVideos = await store.videos.getAll();
     
     // Combine photos and videos, adding type field
     const allPhotosWithType = allPhotos.map(p => ({ ...p, type: 'photo' }));
@@ -299,7 +446,7 @@ app.post('/reset', async (req, res) => {
     const { email } = req.body;
     if (!email) return res.render('reset_request', { message: 'Please provide your email' });
 
-    const user = await users.findByEmail(email);
+    const user = await store.users.findByEmail(email);
     if (!user) {
       // Do not reveal whether the email exists — show success message anyway
       return res.render('reset_sent');
@@ -307,7 +454,7 @@ app.post('/reset', async (req, res) => {
 
     const token = crypto.randomBytes(32).toString('hex');
     const expiresAt = new Date(Date.now() + 1000 * 60 * 60).toISOString(); // 1 hour
-    await passwordResets.create(token, user.id, expiresAt);
+    await store.passwordResets.create(token, user.id, expiresAt);
 
     const base = process.env.BASE_URL || process.env.APP_URL || `http://localhost:${process.env.PORT || 3000}`;
     const resetUrl = `${base}/reset/${token}`;
@@ -334,10 +481,10 @@ app.post('/reset', async (req, res) => {
 app.get('/reset/:token', async (req, res) => {
   try {
     const token = req.params.token;
-    const record = await passwordResets.findByToken(token);
+    const record = await store.passwordResets.findByToken(token);
     if (!record) return res.render('reset_request', { message: 'Invalid or expired token' });
     if (new Date(record.expiresAt) < new Date()) {
-      await passwordResets.deleteByToken(token);
+      await store.passwordResets.deleteByToken(token);
       return res.render('reset_request', { message: 'Token expired' });
     }
     res.render('reset', { token, error: null });
@@ -352,17 +499,17 @@ app.post('/reset-password', async (req, res) => {
   try {
     const { token, newPassword } = req.body;
     if (!token || !newPassword) return res.render('reset', { token, error: 'Missing token or password' });
-    const record = await passwordResets.findByToken(token);
+    const record = await store.passwordResets.findByToken(token);
     if (!record) return res.render('reset', { token: null, error: 'Invalid or expired token' });
     if (new Date(record.expiresAt) < new Date()) {
-      await passwordResets.deleteByToken(token);
+      await store.passwordResets.deleteByToken(token);
       return res.render('reset', { token: null, error: 'Token expired' });
     }
 
     // Update user's password
     const hashed = bcrypt.hashSync(newPassword, 10);
-    await users.update(record.userId, { password: hashed });
-    await passwordResets.deleteByToken(token);
+    await store.users.update(record.userId, { password: hashed });
+    await store.passwordResets.deleteByToken(token);
 
     res.redirect('/login?message=Password%20updated%20successfully');
   } catch (err) {
@@ -409,14 +556,14 @@ app.post('/forgot-password', async (req, res) => {
     const { email } = req.body;
     if (!email) return res.render('forogt-password', { error: 'Please provide your email' });
 
-    const user = await users.findByEmail(email);
+    const user = await store.users.findByEmail(email);
     if (!user) {
       return res.render('reset_sent');
     }
 
     const token = crypto.randomBytes(32).toString('hex');
     const expiresAt = new Date(Date.now() + 1000 * 60 * 60).toISOString(); // 1 hour
-    await passwordResets.create(token, user.id, expiresAt);
+    await store.passwordResets.create(token, user.id, expiresAt);
 
     const base = process.env.BASE_URL || process.env.APP_URL || `http://localhost:${process.env.PORT || 3000}`;
     const resetUrl = `${base}/reset/${token}`;
@@ -452,7 +599,7 @@ app.post('/register', async (req, res) => {
       });
     }
 
-    if (await users.findByUsername(username)) {
+    if (await store.users.findByUsername(username)) {
       return res.render('register', {
         message: 'Username already taken',
         GOOGLE_OAUTH: app.locals.GOOGLE_OAUTH,
@@ -460,7 +607,7 @@ app.post('/register', async (req, res) => {
       });
     }
 
-    if (await users.findByEmail(email)) {
+    if (await store.users.findByEmail(email)) {
       return res.render('register', {
         message: 'Email already registered',
         GOOGLE_OAUTH: app.locals.GOOGLE_OAUTH,
@@ -468,22 +615,57 @@ app.post('/register', async (req, res) => {
       });
     }
 
-    const hashedPassword = bcrypt.hashSync(password, 10);
-    const user = {
-      id: uuidv4(),
-      username,
-      email,
-      password: hashedPassword,
-      displayName: displayName || username,
-      authProvider: 'local'
-    };
+    // If Supabase is configured, create user via Supabase Auth and store mapping locally
+    let user = null;
+    if (supabaseAdmin) {
+      try {
+        // Create the user in Supabase Auth (service role key)
+        const supaPayload = {
+          email: email,
+          password: password,
+          user_metadata: { displayName: displayName || username, username }
+        };
+        const supaResp = await supabaseAdmin.auth.admin.createUser(supaPayload);
+        const supaUser = (supaResp && (supaResp.user || supaResp.data)) || null;
+        if (!supaUser) {
+          console.error('Supabase create user error', supaResp.error || supaResp);
+          return res.render('register', { message: 'Registration error (supabase)', GOOGLE_OAUTH: app.locals.GOOGLE_OAUTH, ENTRA_OAUTH: app.locals.ENTRA_OAUTH });
+        }
 
-    await users.create(user);
+        // Persist a local user record for compatibility with the existing app
+        user = {
+          id: supaUser.id,
+          username,
+          email,
+          password: null,
+          displayName: displayName || username,
+          authProvider: 'supabase'
+        };
+        await store.users.create(user);
+        // mark mapping uid
+        await store.users.update(user.id, { uid: supaUser.id });
+      } catch (e) {
+        console.error('Supabase create user exception', e && e.message);
+        return res.render('register', { message: 'Registration error', GOOGLE_OAUTH: app.locals.GOOGLE_OAUTH, ENTRA_OAUTH: app.locals.ENTRA_OAUTH });
+      }
+    } else {
+      const hashedPassword = bcrypt.hashSync(password, 10);
+      user = {
+        id: uuidv4(),
+        username,
+        email,
+        password: hashedPassword,
+        displayName: displayName || username,
+        authProvider: 'local'
+      };
+
+      await store.users.create(user);
+    }
     // Create an email verification token and send verification email (if mail configured)
     try {
       const token = crypto.randomBytes(32).toString('hex');
       const expiresAt = new Date(Date.now() + 1000 * 60 * 60 * 24).toISOString(); // 24 hours
-      await verifications.create(token, user.id, expiresAt);
+      await store.verifications.create(token, user.id, expiresAt);
       const base = app.locals.BASE_URL;
       const verifyUrl = `${base}/verify/${token}`;
       const mailOpts = {
@@ -515,15 +697,36 @@ app.post('/register', async (req, res) => {
 });
 
 // Handle local login
-app.post('/login', (req, res, next) => {
-  passport.authenticate('local', async (err, user, info) => {
-    if (err) return next(err);
+app.post('/login', async (req, res, next) => {
+  try {
+    const { username, password } = req.body;
+    // Support login by username or email
+    let user = await store.users.findByUsername(username) || await store.users.findByEmail(username);
     if (!user) {
-      return res.render('login', {
-        message: 'Invalid credentials',
-        GOOGLE_OAUTH: app.locals.GOOGLE_OAUTH,
-        ENTRA_OAUTH: app.locals.ENTRA_OAUTH
-      });
+      return res.render('login', { message: 'Invalid credentials', GOOGLE_OAUTH: app.locals.GOOGLE_OAUTH, ENTRA_OAUTH: app.locals.ENTRA_OAUTH });
+    }
+
+    let authOk = false;
+
+    // If Supabase is configured prefer Supabase auth for password verification
+    if (supabaseAdmin) {
+      try {
+        const { data, error } = await supabaseAdmin.auth.signInWithPassword({ email: user.email, password });
+        if (!error && data && data.user) {
+          authOk = true;
+        }
+      } catch (e) {
+        console.error('Supabase signIn error:', e && e.message);
+      }
+    }
+
+    // Fallback: local password check
+    if (!authOk) {
+      if (user.password && bcrypt.compareSync(password, user.password)) authOk = true;
+    }
+
+    if (!authOk) {
+      return res.render('login', { message: 'Invalid credentials', GOOGLE_OAUTH: app.locals.GOOGLE_OAUTH, ENTRA_OAUTH: app.locals.ENTRA_OAUTH });
     }
     // Check if user is verified
     if (!user.verified) {
@@ -583,7 +786,14 @@ app.post('/login', (req, res, next) => {
       }
       return res.redirect('/');
     });
-  })(req, res, next);
+  } catch (err) {
+    console.error('Login handler error:', err && err.message);
+    return res.render('login', {
+      message: 'Login error',
+      GOOGLE_OAUTH: app.locals.GOOGLE_OAUTH,
+      ENTRA_OAUTH: app.locals.ENTRA_OAUTH
+    });
+  }
 });
 
 // 2FA Login Form
@@ -605,7 +815,7 @@ app.post('/2fa-login', async (req, res) => {
     if (twoFactor.method === 'authenticator') {
       const { token, backupCode } = req.body;
       if (!token && !backupCode) return res.render('2fa-login', { error: 'Code or backup code required', twoFactorMethod: 'authenticator' });
-      const user = await users.findById(twoFactor.userId);
+      const user = await store.users.findById(twoFactor.userId);
       if (!user || !user.twoFactorSecret) return res.render('2fa-login', { error: 'User or secret not found', twoFactorMethod: 'authenticator' });
       authenticator.options = { window: 1 };
       const valid = authenticator.check(String(token).trim(), user.twoFactorSecret);
@@ -613,7 +823,7 @@ app.post('/2fa-login', async (req, res) => {
         // If token isn't valid, check backup codes if provided
         if (backupCode && String(backupCode).trim()) {
           // lookup unused codes for user
-          const rows = await backupCodes.findValidByUserAndCode(user.id, null);
+          const rows = await store.backupCodes.findValidByUserAndCode(user.id, null);
           let match = null;
           for (const r of rows) {
             try {
@@ -622,7 +832,7 @@ app.post('/2fa-login', async (req, res) => {
           }
           if (match) {
             // mark used and log user in
-            await backupCodes.markUsed(match.id);
+            await store.backupCodes.markUsed(match.id);
             await new Promise((resolve, reject) => {
               req.logIn(user, (err) => (err ? reject(err) : resolve()));
             });
@@ -657,7 +867,7 @@ app.post('/2fa-verify-email', async (req, res) => {
     if (Date.now() > twoFactor.expiresAt) return res.render('2fa-login', { error: 'Code expired', twoFactorMethod: 'email' });
     if (String(emailToken).trim() !== String(twoFactor.code)) return res.render('2fa-login', { error: 'Invalid code', twoFactorMethod: 'email' });
     // Valid — log in the user
-    const user = await users.findById(twoFactor.userId);
+    const user = await store.users.findById(twoFactor.userId);
     if (!user) return res.render('2fa-login', { error: 'User not found', twoFactorMethod: 'email' });
     await new Promise((resolve, reject) => {
       req.logIn(user, (err) => (err ? reject(err) : resolve()));
@@ -675,7 +885,7 @@ app.post('/2fa-resend', async (req, res) => {
   try {
     const twoFactor = req.session.twoFactor;
     if (!twoFactor) return res.status(400).json({ error: 'No login pending' });
-    const user = await users.findById(twoFactor.userId);
+    const user = await store.users.findById(twoFactor.userId);
     if (!user) return res.status(400).json({ error: 'User not found' });
     if (twoFactor.method !== 'email') return res.status(400).json({ error: 'Only email 2FA supported' });
     const code = Math.floor(100000 + Math.random() * 900000).toString();
@@ -695,12 +905,88 @@ app.post('/2fa-resend', async (req, res) => {
   }
 });
 
+// Regenerate backup recovery codes (server-side, authenticated)
+app.post('/api/2fa/backup-codes/regenerate', isAuthenticated, async (req, res) => {
+  try {
+    if (!supabaseAdmin) return res.status(500).json({ error: 'Supabase service client not configured' });
+
+    const userId = req.user.id;
+    // Remove existing codes for user
+    await supabaseAdmin.from('backup_codes').delete().eq('user_id', userId);
+
+    // Generate 10 single-use codes
+    const codes = [];
+    const codeHashes = [];
+    for (let i = 0; i < 10; i++) {
+      // 8-char alphanumeric code
+      const code = Math.random().toString(36).slice(2, 10).toUpperCase();
+      codes.push(code);
+      const hash = bcrypt.hashSync(code, 10);
+      codeHashes.push({ user_id: userId, code_hash: hash });
+    }
+
+    // Insert hashed codes into Supabase
+    const { error } = await supabaseAdmin.from('backup_codes').insert(codeHashes);
+    if (error) return res.status(500).json({ error: error.message || error });
+
+    // Return plaintext codes once for the user to copy/save — these are single-shot
+    res.json({ success: true, codes });
+  } catch (err) {
+    console.error('Regenerate backup-codes error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Verify a backup code during an in-progress 2FA login flow (uses session.twoFactor.userId)
+app.post('/2fa-verify-backup', async (req, res) => {
+  try {
+    const { backupCode } = req.body;
+    const twoFactor = req.session.twoFactor;
+    if (!twoFactor) return res.status(400).render('2fa-login', { error: 'No login in progress', twoFactorMethod: 'authenticator' });
+    const targetUserId = twoFactor.userId;
+
+    if (!backupCode) return res.render('2fa-login', { error: 'Backup code required', twoFactorMethod: twoFactor.method || 'authenticator' });
+
+    if (!supabaseAdmin) return res.render('2fa-login', { error: 'Server not configured for backup codes', twoFactorMethod: twoFactor.method || 'authenticator' });
+
+    // fetch unused codes for user
+    const { data, error } = await supabaseAdmin.from('backup_codes').select('*').eq('user_id', targetUserId).eq('used', false).limit(100);
+    if (error) return res.render('2fa-login', { error: 'Error checking backup codes', twoFactorMethod: twoFactor.method || 'authenticator' });
+
+    let matched = null;
+    for (const row of data || []) {
+      if (bcrypt.compareSync(String(backupCode).trim(), row.code_hash)) {
+        matched = row;
+        break;
+      }
+    }
+
+    if (!matched) return res.render('2fa-login', { error: 'Invalid backup code', twoFactorMethod: twoFactor.method || 'authenticator' });
+
+    // Mark the used code as used
+    await supabaseAdmin.from('backup_codes').update({ used: true }).eq('id', matched.id);
+
+    // Log in the user and complete the 2FA flow
+    const user = await store.users.findById(targetUserId);
+    if (!user) return res.render('2fa-login', { error: 'User not found', twoFactorMethod: twoFactor.method || 'authenticator' });
+
+    await new Promise((resolve, reject) => {
+      req.logIn(user, err => (err ? reject(err) : resolve()));
+    });
+    delete req.session.twoFactor;
+    return res.redirect('/');
+  } catch (err) {
+    console.error('2fa backup verify error:', err);
+    res.render('2fa-login', { error: 'Error verifying backup code', twoFactorMethod: 'authenticator' });
+  }
+});
+
 // GET backup codes status (unused count)
 app.get('/api/2fa/backup-codes', isAuthenticated, async (req, res) => {
   try {
-    const user = await users.findById(req.user.id);
+    const user = await store.users.findById(req.user.id);
     if (!user || user.is2FAEnabled !== 'authenticator') return res.status(400).json({ error: 'Authenticator 2FA not enabled' });
-    const rows = await backupCodes.getUnusedByUser(req.user.id);
+    const rows = await store.backupCodes.getUnusedByUser(req.user.id);
     res.json({ success: true, unused: rows.length });
   } catch (err) {
     console.error(err);
@@ -711,10 +997,10 @@ app.get('/api/2fa/backup-codes', isAuthenticated, async (req, res) => {
 // Regenerate backup codes (delete old, create new) — returns the plain codes to present once
 app.post('/api/2fa/backup-codes/regenerate', isAuthenticated, async (req, res) => {
   try {
-    const user = await users.findById(req.user.id);
+    const user = await store.users.findById(req.user.id);
     if (!user || user.is2FAEnabled !== 'authenticator') return res.status(400).json({ error: 'Authenticator 2FA not enabled' });
 
-    await backupCodes.deleteByUser(req.user.id);
+    await store.backupCodes.deleteByUser(req.user.id);
     const count = 10;
     const plainCodes = [];
     for (let i = 0; i < count; i++) {
@@ -722,7 +1008,11 @@ app.post('/api/2fa/backup-codes/regenerate', isAuthenticated, async (req, res) =
       const code = `${token.slice(0,4)}-${token.slice(4,8)}`;
       const id = uuidv4();
       const hashed = bcrypt.hashSync(code, 10);
-      await backupCodes.create(id, req.user.id, hashed);
+      if (supabaseAdmin && store.backupCodes && store.backupCodes.insertMany) {
+        await store.backupCodes.insertMany([{ id, user_id: req.user.id, code_hash: hashed }]);
+      } else {
+        await backupCodes.create(id, req.user.id, hashed);
+      }
       plainCodes.push(code);
     }
 
@@ -859,12 +1149,12 @@ app.post('/resend-verification', async (req, res) => {
   try {
     const { email } = req.body;
     // For privacy, always render check-email even if user not found
-    const user = email ? await users.findByEmail(email) : null;
+    const user = email ? await store.users.findByEmail(email) : null;
     if (user) {
       // create a new verification token and send link
       const token = crypto.randomBytes(32).toString('hex');
       const expiresAt = new Date(Date.now() + 1000 * 60 * 60 * 24).toISOString(); // 24 hours
-      await verifications.create(token, user.id, expiresAt);
+      await store.verifications.create(token, user.id, expiresAt);
       const base = app.locals.BASE_URL;
       const verifyUrl = `${base}/verify/${token}`;
       await sendMail({
@@ -897,12 +1187,12 @@ app.post('/admin/resend-verification', isAuthenticated, async (req, res) => {
     const { email } = req.body;
     if (!email) return res.render('resend-verification-admin', { user, message: 'Email required' });
 
-    const target = await users.findByEmail(email);
+    const target = await store.users.findByEmail(email);
     if (!target) return res.render('resend-verification-admin', { user, message: 'User not found' });
 
     const token = crypto.randomBytes(32).toString('hex');
     const expiresAt = new Date(Date.now() + 1000 * 60 * 60 * 24).toISOString(); // 24 hours
-    await verifications.create(token, target.id, expiresAt);
+    await store.verifications.create(token, target.id, expiresAt);
 
     const base = app.locals.BASE_URL;
     const verifyUrl = `${base.replace(/\/$/, '')}/verify/${token}`;
@@ -934,8 +1224,8 @@ app.post('/api/settings', isAuthenticated, async (req, res) => {
     if (displayName) updates.displayName = displayName;
     if (typeof bio !== 'undefined') updates.bio = bio;
     if (Object.keys(updates).length === 0) return res.status(400).json({ error: 'No updates provided' });
-    await users.update(req.user.id, updates);
-    const updated = await users.findById(req.user.id);
+    await store.users.update(req.user.id, updates);
+    const updated = await store.users.findById(req.user.id);
     res.json({ success: true, user: updated });
   } catch (err) {
     console.error(err);
@@ -956,11 +1246,59 @@ app.post('/api/upload', isAuthenticated, upload.single('photo'), async (req, res
     if (!file) return res.status(400).json({ error: 'File is required' });
     const isVideo = file.mimetype && file.mimetype.startsWith('video/');
     if (isVideo) {
-      await videos.create({ id: uuidv4(), userId: req.user.id, filename: file.filename, caption });
+      await store.videos.create({ id: uuidv4(), userId: req.user.id, filename: file.filename, caption });
     } else {
-      await photos.create({ id: uuidv4(), userId: req.user.id, filename: file.filename, caption });
+      await store.photos.create({ id: uuidv4(), userId: req.user.id, filename: file.filename, caption });
     }
     res.json({ success: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// New: upload to Supabase Storage and create a record in Supabase `photos` or `videos` tables
+app.post('/api/upload-supabase', isAuthenticated, uploadMemory.single('photo'), async (req, res) => {
+  try {
+    if (!supabaseAdmin) return res.status(500).json({ error: 'Supabase not configured for uploads' });
+    const file = req.file;
+    const { caption } = req.body;
+    if (!file) return res.status(400).json({ error: 'File is required' });
+
+    const isVideo = file.mimetype && file.mimetype.startsWith('video/');
+    const ext = file.originalname.substring(file.originalname.lastIndexOf('.')) || '';
+    const bucket = process.env.SUPABASE_BUCKET;
+    if (!bucket) return res.status(500).json({ error: 'SUPABASE_BUCKET not configured in .env' });
+
+    // filepath: userId/YYYYMMDD/uuid.ext
+    const filename = `${req.user.id}/${Date.now()}-${uuidv4()}${ext}`;
+
+    const { data: uploadData, error: uploadErr } = await supabaseAdmin.storage.from(bucket).upload(filename, file.buffer, {
+      contentType: file.mimetype,
+      upsert: false
+    });
+
+    if (uploadErr) {
+      console.error('Supabase upload error', uploadErr);
+      return res.status(500).json({ error: uploadErr.message || 'Failed to upload' });
+    }
+
+    // Insert into Supabase photos or videos table
+    const table = isVideo ? 'videos' : 'photos';
+    const record = {
+      id: uuidv4(),
+      user_id: req.user.id,
+      filename: filename,
+      caption: caption || ''
+    };
+
+    const { error: insertErr } = await supabaseAdmin.from(table).insert(record);
+    if (insertErr) {
+      console.error('Supabase DB insert error', insertErr);
+      return res.status(500).json({ error: insertErr.message || 'Failed to save metadata' });
+    }
+
+    return res.json({ success: true, storagePath: filename, record });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: err.message });
@@ -970,7 +1308,7 @@ app.post('/api/upload', isAuthenticated, upload.single('photo'), async (req, res
 // Setup 2FA page - show options
 app.get('/setup-2fa', isAuthenticated, async (req, res) => {
   try {
-    const user = await users.findById(req.user.id);
+    const user = await store.users.findById(req.user.id);
     // If user already has an authenticator secret, show it. Otherwise generate a temporary secret
     let secret = user.twoFactorSecret || null;
     let qrCodeImage = null;
@@ -998,7 +1336,7 @@ app.get('/setup-2fa', isAuthenticated, async (req, res) => {
 // Enable email 2FA
 app.post('/enable-email-2fa', isAuthenticated, async (req, res) => {
   try {
-    await users.update(req.user.id, { is2FAEnabled: 'email' });
+    await store.users.update(req.user.id, { is2FAEnabled: 'email' });
     res.render('setup-2fa', { user: req.user, qrCodeImage: null, secret: null, error: null, message: 'Email 2FA enabled', plainCodes: null });
   } catch (err) {
     console.error(err);
@@ -1012,7 +1350,7 @@ app.post('/setup-2fa', isAuthenticated, async (req, res) => {
     const { token } = req.body;
     // Prefer the pending secret in session (generated on GET) otherwise fall back to stored secret
     const pending = req.session.pendingTwoFactorSecret;
-    const user = await users.findById(req.user.id);
+    const user = await store.users.findById(req.user.id);
     const secret = pending || user.twoFactorSecret;
     if (!secret) return res.render('setup-2fa', { user: req.user, qrCodeImage: null, secret: null, error: 'No secret available to verify', message: null });
 
@@ -1030,7 +1368,7 @@ app.post('/setup-2fa', isAuthenticated, async (req, res) => {
     }
 
     // Valid token: store secret permanently and mark authenticator 2FA enabled
-    await users.update(req.user.id, { twoFactorSecret: secret, is2FAEnabled: 'authenticator' });
+    await store.users.update(req.user.id, { twoFactorSecret: secret, is2FAEnabled: 'authenticator' });
     delete req.session.pendingTwoFactorSecret;
 
     // Show success and the secret/QR (so user can keep a backup)
@@ -1043,7 +1381,7 @@ app.post('/setup-2fa', isAuthenticated, async (req, res) => {
     // Generate backup codes for the user and present them once
     try {
       // remove old codes
-      await backupCodes.deleteByUser(req.user.id);
+      await store.backupCodes.deleteByUser(req.user.id);
       const count = 10;
       const plainCodes = [];
       for (let i = 0; i < count; i++) {
@@ -1052,7 +1390,11 @@ app.post('/setup-2fa', isAuthenticated, async (req, res) => {
         const code = `${token.slice(0,4)}-${token.slice(4,8)}`;
         const id = uuidv4();
         const hashed = bcrypt.hashSync(code, 10);
-        await backupCodes.create(id, req.user.id, hashed);
+        if (supabaseAdmin && store.backupCodes && store.backupCodes.insertMany) {
+          await store.backupCodes.insertMany([{ id, user_id: req.user.id, code_hash: hashed }]);
+        } else {
+          await backupCodes.create(id, req.user.id, hashed);
+        }
         plainCodes.push(code);
       }
       res.render('setup-2fa', { user: req.user, qrCodeImage, secret, error: null, message: 'Two-factor authentication enabled (Authenticator app)', plainCodes });
@@ -1069,7 +1411,7 @@ app.post('/setup-2fa', isAuthenticated, async (req, res) => {
 // Disable 2FA (authenticator or email)
 app.post('/disable-2fa', isAuthenticated, async (req, res) => {
   try {
-    await users.update(req.user.id, { is2FAEnabled: 'none', twoFactorSecret: null });
+    await store.users.update(req.user.id, { is2FAEnabled: 'none', twoFactorSecret: null });
     res.redirect('/settings');
   } catch (err) {
     console.error('Disable 2FA error:', err);
@@ -1088,15 +1430,15 @@ app.get('/check-email', (req, res) => {
 app.get('/verify/:token', async (req, res) => {
   try {
     const token = req.params.token;
-    const record = await verifications.findByToken(token);
+    const record = await store.verifications.findByToken(token);
     if (!record) return res.render('verify', { success: false, message: 'Invalid or expired verification token.' });
     if (new Date(record.expiresAt) < new Date()) {
-      await verifications.deleteByToken(token);
+      await store.verifications.deleteByToken(token);
       return res.render('verify', { success: false, message: 'Verification token expired.' });
     }
     // mark user verified
-    await users.update(record.userId, { verified: 1 });
-    await verifications.deleteByToken(token);
+    await store.users.update(record.userId, { verified: 1 });
+    await store.verifications.deleteByToken(token);
     res.render('verify', { success: true, message: 'Your email has been verified. You can now use your account.' });
   } catch (err) {
     console.error(err);
@@ -1116,7 +1458,7 @@ app.get('/verified', (req, res) => {
 // Get all photos
 app.get('/api/photos', async (req, res) => {
   try {
-    const allPhotos = await photos.getAll();
+    const allPhotos = await store.photos.getAll();
     res.json({ photos: allPhotos });
   } catch (err) {
     console.error(err);
@@ -1127,7 +1469,7 @@ app.get('/api/photos', async (req, res) => {
 // Get all videos
 app.get('/api/videos', async (req, res) => {
   try {
-    const allVideos = await videos.getAll();
+    const allVideos = await store.videos.getAll();
     res.json({ videos: allVideos });
   } catch (err) {
     console.error(err);
@@ -1138,7 +1480,7 @@ app.get('/api/videos', async (req, res) => {
 // Get user's photos
 app.get('/api/user/:userId/photos', async (req, res) => {
   try {
-    const userPhotos = await photos.getByUserId(req.params.userId);
+    const userPhotos = await store.photos.getByUserId(req.params.userId);
     res.json({ photos: userPhotos });
   } catch (err) {
     console.error(err);
@@ -1149,7 +1491,7 @@ app.get('/api/user/:userId/photos', async (req, res) => {
 // Get user's videos
 app.get('/api/user/:userId/videos', async (req, res) => {
   try {
-    const userVideos = await videos.getByUserId(req.params.userId);
+    const userVideos = await store.videos.getByUserId(req.params.userId);
     res.json({ videos: userVideos });
   } catch (err) {
     console.error(err);
@@ -1160,23 +1502,23 @@ app.get('/api/user/:userId/videos', async (req, res) => {
 // Like a photo
 app.post('/api/photos/:photoId/like', isAuthenticated, async (req, res) => {
   try {
-    const photo = await photos.findById(req.params.photoId);
+    const photo = await store.photos.findById(req.params.photoId);
     if (!photo) {
       return res.status(404).json({ error: 'Photo not found' });
     }
 
-    const existingLike = await likes.findByPhotoAndUser(req.params.photoId, req.user.id);
+    const existingLike = await store.likes.findByPhotoAndUser(req.params.photoId, req.user.id);
     if (existingLike) {
-      await likes.remove(req.params.photoId, req.user.id);
-      const count = await likes.countByPhoto(req.params.photoId);
+      await store.likes.remove(req.params.photoId, req.user.id);
+      const count = await store.likes.countByPhoto(req.params.photoId);
       res.json({ success: true, liked: false, likes: count });
     } else {
-      await likes.create({
+      await store.likes.create({
         id: uuidv4(),
         photoId: req.params.photoId,
         userId: req.user.id
       });
-      const count = await likes.countByPhoto(req.params.photoId);
+      const count = await store.likes.countByPhoto(req.params.photoId);
       res.json({ success: true, liked: true, likes: count });
     }
   } catch (err) {
@@ -1188,23 +1530,23 @@ app.post('/api/photos/:photoId/like', isAuthenticated, async (req, res) => {
 // Like a video
 app.post('/api/videos/:videoId/like', isAuthenticated, async (req, res) => {
   try {
-    const video = await videos.findById(req.params.videoId);
+    const video = await store.videos.findById(req.params.videoId);
     if (!video) {
       return res.status(404).json({ error: 'Video not found' });
     }
 
-    const existingLike = await videoLikes.findByVideoAndUser(req.params.videoId, req.user.id);
+    const existingLike = await store.videoLikes.findByVideoAndUser(req.params.videoId, req.user.id);
     if (existingLike) {
-      await videoLikes.remove(req.params.videoId, req.user.id);
-      const count = await videoLikes.countByVideo(req.params.videoId);
+      await store.videoLikes.remove(req.params.videoId, req.user.id);
+      const count = await store.videoLikes.countByVideo(req.params.videoId);
       res.json({ success: true, liked: false, likes: count });
     } else {
-      await videoLikes.create({
+      await store.videoLikes.create({
         id: uuidv4(),
         videoId: req.params.videoId,
         userId: req.user.id
       });
-      const count = await videoLikes.countByVideo(req.params.videoId);
+      const count = await store.videoLikes.countByVideo(req.params.videoId);
       res.json({ success: true, liked: true, likes: count });
     }
   } catch (err) {
@@ -1221,7 +1563,7 @@ app.post('/api/photos/:photoId/comment', isAuthenticated, async (req, res) => {
       return res.status(400).json({ error: 'Comment text required' });
     }
 
-    const photo = await photos.findById(req.params.photoId);
+    const photo = await store.photos.findById(req.params.photoId);
     if (!photo) {
       return res.status(404).json({ error: 'Photo not found' });
     }
@@ -1233,7 +1575,7 @@ app.post('/api/photos/:photoId/comment', isAuthenticated, async (req, res) => {
       text
     };
 
-    await comments.create(comment);
+    await store.comments.create(comment);
     const newComment = {
       ...comment,
       username: req.user.username,
@@ -1256,7 +1598,7 @@ app.post('/api/videos/:videoId/comment', isAuthenticated, async (req, res) => {
       return res.status(400).json({ error: 'Comment text required' });
     }
 
-    const video = await videos.findById(req.params.videoId);
+    const video = await store.videos.findById(req.params.videoId);
     if (!video) {
       return res.status(404).json({ error: 'Video not found' });
     }
@@ -1268,7 +1610,7 @@ app.post('/api/videos/:videoId/comment', isAuthenticated, async (req, res) => {
       text
     };
 
-    await videoComments.create(comment);
+    await store.videoComments.create(comment);
     const newComment = {
       ...comment,
       username: req.user.username,
@@ -1286,7 +1628,7 @@ app.post('/api/videos/:videoId/comment', isAuthenticated, async (req, res) => {
 // Get comments for a photo
 app.get('/api/photos/:photoId/comments', async (req, res) => {
   try {
-    const photoComments = await comments.getByPhoto(req.params.photoId);
+    const photoComments = await store.comments.getByPhoto(req.params.photoId);
     res.json({ comments: photoComments });
   } catch (err) {
     console.error(err);
@@ -1297,7 +1639,7 @@ app.get('/api/photos/:photoId/comments', async (req, res) => {
 // Get comments for a video
 app.get('/api/videos/:videoId/comments', async (req, res) => {
   try {
-    const vComments = await videoComments.getByVideo(req.params.videoId);
+    const vComments = await store.videoComments.getByVideo(req.params.videoId);
     res.json({ comments: vComments });
   } catch (err) {
     console.error(err);
@@ -1308,7 +1650,7 @@ app.get('/api/videos/:videoId/comments', async (req, res) => {
 // Delete a photo (only owner)
 app.delete('/api/photos/:photoId', isAuthenticated, async (req, res) => {
   try {
-    const photo = await photos.findById(req.params.photoId);
+    const photo = await store.photos.findById(req.params.photoId);
     if (!photo) {
       return res.status(404).json({ error: 'Photo not found' });
     }
@@ -1316,7 +1658,7 @@ app.delete('/api/photos/:photoId', isAuthenticated, async (req, res) => {
       return res.status(403).json({ error: 'Unauthorized' });
     }
 
-    await photos.delete(req.params.photoId);
+    await store.photos.delete(req.params.photoId);
     res.json({ success: true });
   } catch (err) {
     console.error(err);
@@ -1327,7 +1669,7 @@ app.delete('/api/photos/:photoId', isAuthenticated, async (req, res) => {
 // Delete a video (only owner)
 app.delete('/api/videos/:videoId', isAuthenticated, async (req, res) => {
   try {
-    const video = await videos.findById(req.params.videoId);
+    const video = await store.videos.findById(req.params.videoId);
     if (!video) {
       return res.status(404).json({ error: 'Video not found' });
     }
@@ -1335,7 +1677,7 @@ app.delete('/api/videos/:videoId', isAuthenticated, async (req, res) => {
       return res.status(403).json({ error: 'Unauthorized' });
     }
 
-    await videos.delete(req.params.videoId);
+    await store.videos.delete(req.params.videoId);
     res.json({ success: true });
   } catch (err) {
     console.error(err);
@@ -1346,7 +1688,7 @@ app.delete('/api/videos/:videoId', isAuthenticated, async (req, res) => {
 // Delete a comment (only owner)
 app.delete('/api/comments/:commentId', isAuthenticated, async (req, res) => {
   try {
-    const comment = await comments.findById(req.params.commentId);
+    const comment = await store.comments.findById(req.params.commentId);
     if (!comment) {
       return res.status(404).json({ error: 'Comment not found' });
     }
@@ -1354,7 +1696,7 @@ app.delete('/api/comments/:commentId', isAuthenticated, async (req, res) => {
       return res.status(403).json({ error: 'Unauthorized' });
     }
 
-    await comments.delete(req.params.commentId);
+    await store.comments.delete(req.params.commentId);
     res.json({ success: true });
   } catch (err) {
     console.error(err);
@@ -1365,7 +1707,7 @@ app.delete('/api/comments/:commentId', isAuthenticated, async (req, res) => {
 // Delete a video comment (only owner)
 app.delete('/api/video-comments/:videoCommentId', isAuthenticated, async (req, res) => {
   try {
-    const comment = await videoComments.findById(req.params.videoCommentId);
+    const comment = await store.videoComments.findById(req.params.videoCommentId);
     if (!comment) {
       return res.status(404).json({ error: 'Comment not found' });
     }
@@ -1373,7 +1715,7 @@ app.delete('/api/video-comments/:videoCommentId', isAuthenticated, async (req, r
       return res.status(403).json({ error: 'Unauthorized' });
     }
 
-    await videoComments.delete(req.params.videoCommentId);
+    await store.videoComments.delete(req.params.videoCommentId);
     res.json({ success: true });
   } catch (err) {
     console.error(err);
