@@ -38,7 +38,7 @@
         <div class="divider" style="text-align:center;margin:18px 0"><span>or</span></div>
         <div class="oauth-buttons" style="display:flex;flex-direction:column;gap:10px">
             <% if (typeof GOOGLE_OAUTH !== 'undefined' && GOOGLE_OAUTH) { %>
-            <a class="btn btn-oauth" href="/auth/google">
+            <a href="/auth/google" class="btn btn-oauth">
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
                         <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
                         <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
@@ -49,7 +49,7 @@
             </a>
             <% } %>
             <% if (typeof ENTRA_OAUTH !== 'undefined' && ENTRA_OAUTH) { %>
-            <a class="btn btn-oauth" href="/auth/entra">
+            <a href="/auth/entra" class="btn btn-oauth">
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
                         <rect x="1" y="1" width="9" height="9" fill="#0078D4"/>
                         <rect x="14" y="1" width="9" height="9" fill="#50E6FF"/>

@@ -5,24 +5,28 @@ import { dirname, join } from 'path';
 import multer from 'multer';
 import { v4 as uuidv4 } from 'uuid';
 import bcrypt from 'bcryptjs';
-import passport from 'passport';
-import LocalStrategy from 'passport-local';
-import GoogleStrategy from 'passport-google-oauth20';
-import MicrosoftStrategy from 'passport-microsoft';
+import dotenv from 'dotenv';
+
+// Load environment variables FIRST before importing anything that depends on process.env
+dotenv.config();
+
+// Now safely import modules that depend on env vars
+// Passport removed - using Supabase auth and server-side sessions instead
 import { authenticator } from 'otplib';
 import QRCode from 'qrcode';
-import dotenv from 'dotenv';
-import supabaseAdmin from './lib/supabaseServer.js';
 import supabaseDb from './lib/supabaseDb.js';
 import { initializeDb, users, photos, likes, comments, videos, videoLikes, videoComments, passwordResets, verifications, backupCodes } from './db.js';
 import crypto from 'crypto';
 import nodemailer from 'nodemailer';
 import Mailjet from 'node-mailjet';
 import fs from 'fs';
+
+// Import supabase AFTER dotenv.config() is called
+const supabaseAdminModule = await import('./lib/supabaseServer.js');
+const supabaseAdmin = supabaseAdminModule.default;
+
 // Mailjet integration (will create a Nodemailer-compatible transporter wrapper)
 let mailjetTransporter;
-
-dotenv.config();
 
 // Require a canonical public base URL — do not fall back to localhost in Codespaces
 if (!process.env.BASE_URL && !process.env.APP_URL) {
@@ -66,18 +70,27 @@ app.use(session({
   cookie: { secure: false, httpOnly: true, maxAge: 1000 * 60 * 60 * 24 * 7 } // 7 days
 }));
 
-// Passport initialization
-app.use(passport.initialize());
-app.use(passport.session());
-
-// Make the current user available in all templates (prevents undefined 'user' errors)
+// Make the current user available in all templates and provide session helpers.
 app.use((req, res, next) => {
-  res.locals.user = req.user || null;
-  // Ensure auth flags are visible too
+  // Attach simple session-based auth helpers (compatible with existing uses of req.logIn/req.logOut/req.isAuthenticated)
+  req.isAuthenticated = () => !!(req.session && req.session.userId);
+  req.logIn = (user, cb) => {
+    if (req.session) req.session.userId = user.id;
+    req.user = user;
+    res.locals.user = user;
+    if (cb) cb(null);
+  };
+  req.logOut = (cb) => {
+    if (req.session) delete req.session.userId;
+    delete req.user;
+    res.locals.user = null;
+    if (cb) cb && cb(null);
+  };
+
+  // Make auth flags available to templates
   res.locals.GOOGLE_OAUTH = app.locals.GOOGLE_OAUTH;
   res.locals.ENTRA_OAUTH = app.locals.ENTRA_OAUTH;
-  // Debug: log the user presence
-  // console.log('[debug] locals.user:', !!res.locals.user, res.locals.user && res.locals.user.username);
+  res.locals.user = req.user || null;
   next();
 });
 
@@ -137,114 +150,7 @@ app.locals.GOOGLE_OAUTH = true;
 app.locals.ENTRA_OAUTH = true;
 app.locals.NODE_ENV = process.env.NODE_ENV || 'development';
 
-// ====================
-// Passport Configuration
-// ====================
-
-// Local Strategy
-passport.use(new LocalStrategy.Strategy(async (username, password, done) => {
-  try {
-    // Support login by username OR email
-    let user = await store.users.findByUsername(username);
-    if (!user) user = await store.users.findByEmail(username);
-    if (!user) return done(null, false, { message: 'Invalid credentials' });
-
-    // When user registered via OAuth there may be no password
-    if (!user.password) return done(null, false, { message: 'Invalid credentials' });
-
-    const ok = bcrypt.compareSync(password, user.password);
-    if (!ok) return done(null, false, { message: 'Invalid credentials' });
-
-    return done(null, user);
-  } catch (err) {
-    return done(err);
-  }
-}));
-
-// Google Strategy
-passport.use(new GoogleStrategy.Strategy(
-  {
-    clientID: process.env.GOOGLE_CLIENT_ID || 'your-google-client-id',
-    clientSecret: process.env.GOOGLE_CLIENT_SECRET || 'your-google-client-secret',
-    callbackURL: process.env.GOOGLE_CALLBACK_URL || 'http://localhost:3000/auth/google/callback'
-  },
-  async (accessToken, refreshToken, profile, done) => {
-    try {
-      let user = await store.users.findByEmail(profile.emails[0].value);
-      if (!user) {
-        user = {
-          id: uuidv4(),
-          username: profile.displayName.replace(/\s+/g, '').toLowerCase() + uuidv4().slice(0, 4),
-          email: profile.emails[0].value,
-          displayName: profile.displayName,
-          profilePic: profile.photos[0]?.value,
-          authProvider: 'google',
-          verified: 1 // OAuth users are trusted — mark verified
-        };
-        await store.users.create(user);
-      } else if (!user.verified) {
-        // Ensure existing OAuth users are marked verified
-        await store.users.update(user.id, { verified: 1 });
-        user.verified = 1;
-      }
-      return done(null, user);
-    } catch (err) {
-      done(err);
-    }
-  }
-));
-
-// Microsoft/Entra ID Strategy
-passport.use(new MicrosoftStrategy.Strategy(
-  {
-    clientID: process.env.ENTRA_CLIENT_ID || 'your-entra-client-id',
-    clientSecret: process.env.ENTRA_CLIENT_SECRET || 'your-entra-client-secret',
-    callbackURL: process.env.ENTRA_CALLBACK_URL || 'http://localhost:3000/auth/entra/callback',
-    scope: ['user.read']
-  },
-  async (accessToken, refreshToken, profile, done) => {
-    try {
-      // Extract email safely - Entra may provide it in different ways
-      const email = (profile.emails && profile.emails[0] && profile.emails[0].value) || 
-                    profile.mail || 
-                    profile.userPrincipalName ||
-                    `${profile.displayName.replace(/\s+/g, '').toLowerCase()}@entra.local`;
-      
-      let user = await store.users.findByEmail(email);
-      if (!user) {
-        user = {
-          id: uuidv4(),
-          username: profile.displayName.replace(/\s+/g, '').toLowerCase() + uuidv4().slice(0, 4),
-          email: email,
-          displayName: profile.displayName,
-          authProvider: 'entra',
-          verified: 1 // OAuth users are trusted — mark verified
-        };
-        await store.users.create(user);
-      } else if (!user.verified) {
-        await store.users.update(user.id, { verified: 1 });
-        user.verified = 1;
-      }
-      return done(null, user);
-    } catch (err) {
-      done(err);
-    }
-  }
-));
-
-// Serialize/Deserialize
-passport.serializeUser((user, done) => {
-  done(null, user.id);
-});
-
-passport.deserializeUser(async (id, done) => {
-  try {
-    const user = await store.users.findById(id);
-    done(null, user);
-  } catch (err) {
-    done(err);
-  }
-});
+// Passport configuration removed — Supabase handles authentication in production.
 
 // ====================
 // Helper Functions
@@ -258,6 +164,26 @@ const isAuthenticated = (req, res, next) => {
 
 // Choose a data store implementation: prefer Supabase (if configured) otherwise local sqlite
 const store = supabaseAdmin ? supabaseDb : { users, photos, likes, comments, videos, videoLikes, videoComments, passwordResets, verifications, backupCodes };
+
+// If a session has a userId, load the full user from the chosen store and attach to req/res.locals
+app.use(async (req, res, next) => {
+  try {
+    if (req.session && req.session.userId && !req.user) {
+      const u = await store.users.findById(req.session.userId);
+      if (u) {
+        req.user = u;
+        res.locals.user = u;
+      } else {
+        // cleanup invalid session
+        delete req.session.userId;
+        res.locals.user = null;
+      }
+    }
+  } catch (e) {
+    console.error('Failed to hydrate session user:', e && e.message);
+  }
+  next();
+});
 
 let smtpTransporter;
 let consoleTransporter = {
@@ -305,6 +231,14 @@ app.get('/api/supabase/health', async (req, res) => {
 app.post('/auth/supabase/session', async (req, res) => {
   try {
     const { access_token, userId } = req.body || {};
+    console.log('[AUTH] ===== Supabase Session Request Start =====');
+    console.log('[AUTH] Body:', { access_token: access_token ? `(${access_token.length} chars)` : 'missing', userId });
+    console.log('[AUTH] Headers:', { 
+      origin: req.headers.origin, 
+      contentType: req.headers['content-type'],
+      cookie: req.headers.cookie ? `(${req.headers.cookie.length} chars)` : 'missing'
+    });
+    console.log('[AUTH] Request method:', req.method, 'URL:', req.originalUrl);
 
     // If we have an access token and supabase server is available, try to verify and fetch user
     let supaUser = null;
@@ -364,12 +298,42 @@ app.post('/auth/supabase/session', async (req, res) => {
       }
     }
 
-    if (!localUser) return res.status(404).json({ error: 'User not found locally' });
+    if (!localUser) {
+      console.error('[AUTH] No local user found for ID:', targetId);
+      return res.status(404).json({ error: 'User not found locally' });
+    }
 
     // Log the user in via express/passport session
     req.logIn(localUser, (err) => {
-      if (err) return res.status(500).json({ error: 'Failed to create session' });
-      return res.json({ ok: true, user: { id: localUser.id, username: localUser.username, email: localUser.email } });
+      if (err) {
+        console.error('[AUTH] Failed to create session:', err.message);
+        return res.status(500).json({ error: 'Failed to create session' });
+      }
+      console.log('[AUTH] Successfully logged in user:', localUser.username, 'sessionID:', req.sessionID);
+      
+      // Ensure session is saved before responding so cookies are properly set
+      req.session.save((saveErr) => {
+        if (saveErr) {
+          console.error('[AUTH] Session save error:', saveErr && saveErr.message);
+          return res.status(500).json({ error: 'Failed to save session' });
+        }
+        
+        // Log the outgoing Set-Cookie header for debugging
+        try {
+          const setCookie = res.getHeader && res.getHeader('Set-Cookie');
+          console.log('[AUTH] Set-Cookie header:', setCookie ? (Array.isArray(setCookie) ? setCookie.map(s => s.toString()) : setCookie.toString()) : 'none');
+        } catch (e) {
+          // ignore header logging failures
+        }
+        
+        // In development, expose the session ID in a response header for easier debugging
+        const isProd = process.env.NODE_ENV === 'production';
+        if (!isProd) {
+          res.setHeader('X-DEV-SESSION-ID', req.sessionID || 'unknown');
+        }
+        
+        return res.json({ ok: true, user: { id: localUser.id, username: localUser.username, email: localUser.email } });
+      });
     });
   } catch (err) {
     console.error('Session bridge error:', err && err.message);
@@ -527,8 +491,82 @@ app.get('/login', (req, res) => {
     message: req.query.message,
     GOOGLE_OAUTH: app.locals.GOOGLE_OAUTH,
     ENTRA_OAUTH: app.locals.ENTRA_OAUTH,
+    SUPABASE_ANON_KEY: app.locals.SUPABASE_ANON_KEY,
     user: req.user
   });
+});
+
+// OAuth redirect routes - redirect to Supabase's OAuth endpoints
+app.get('/auth/google', (req, res) => {
+  const redirectTo = encodeURIComponent('https://rfhitxqaihbqmiakbnxa.supabase.co/auth/v1/callback');
+  res.redirect(`https://rfhitxqaihbqmiakbnxa.supabase.co/auth/v1/authorize?provider=google&redirect_to=${redirectTo}`);
+});
+
+app.get('/auth/entra', (req, res) => {
+  const redirectTo = encodeURIComponent('https://rfhitxqaihbqmiakbnxa.supabase.co/auth/v1/callback');
+  res.redirect(`https://rfhitxqaihbqmiakbnxa.supabase.co/auth/v1/authorize?provider=azure&redirect_to=${redirectTo}`);
+});
+
+// In-memory authorization code store (dev-only, short-lived)
+const oauthAuthCodes = new Map(); // code -> { client_id, redirect_uri, userId, scope, expiresAt }
+const generateAuthCode = () => crypto.randomBytes(24).toString('hex');
+// Cleanup expired codes every minute
+setInterval(() => {
+  const now = Date.now();
+  for (const [code, meta] of oauthAuthCodes.entries()) {
+    if (meta.expiresAt <= now) oauthAuthCodes.delete(code);
+  }
+}, 60 * 1000);
+
+// OAuth consent page (used when Supabase OAuth Server is configured to preview the consent UI)
+app.get('/login/oauth/consent', (req, res) => {
+  const { client_id, redirect_uri, response_type, state, scope } = req.query;
+  if (!client_id || !redirect_uri || !response_type) {
+    return res.status(400).send('Missing required OAuth parameters');
+  }
+
+  // Render a simple consent screen. In production you should look up the client by client_id
+  // and display its registered name, logo, and exact redirect URIs.
+  res.render('oauth-consent', {
+    client_id,
+    redirect_uri,
+    response_type,
+    state,
+    scope: scope || ''
+  });
+});
+
+// Handle consent form submission
+app.post('/login/oauth/consent', async (req, res) => {
+  try {
+    const { client_id, redirect_uri, response_type, state, scope, action } = req.body;
+    // Ensure the user is authenticated before issuing a code
+    if (!req.isAuthenticated()) {
+      // Save the original query in session and redirect to login
+      req.session.oauthReturnTo = req.originalUrl || req.url;
+      return res.redirect('/login');
+    }
+
+    if (action !== 'approve') {
+      const url = new URL(redirect_uri);
+      url.searchParams.set('error', 'access_denied');
+      if (state) url.searchParams.set('state', state);
+      return res.redirect(url.toString());
+    }
+
+    // Approve: create an authorization code and redirect back
+    const code = generateAuthCode();
+    const expiresAt = Date.now() + 1000 * 60 * 5; // 5 minutes
+    oauthAuthCodes.set(code, { client_id, redirect_uri, userId: req.user.id, scope: scope || '', expiresAt });
+
+    const url = new URL(redirect_uri);
+    url.searchParams.set('code', code);
+    if (state) url.searchParams.set('state', state);
+    return res.redirect(url.toString());
+  } catch (err) {
+    console.error('OAuth consent error:', err && err.message);
+    return res.status(500).send('Internal error');
+  }
 });
 
 // Register page
@@ -540,6 +578,7 @@ app.get('/register', (req, res) => {
     message: req.query.message,
     GOOGLE_OAUTH: app.locals.GOOGLE_OAUTH,
     ENTRA_OAUTH: app.locals.ENTRA_OAUTH,
+    SUPABASE_ANON_KEY: app.locals.SUPABASE_ANON_KEY,
     user: req.user
   });
 });
@@ -586,214 +625,14 @@ app.post('/forgot-password', async (req, res) => {
   }
 });
 
-// Handle local registration
+// Registration is handled by Supabase Auth in production. Block local registrations.
 app.post('/register', async (req, res) => {
-  try {
-    const { username, email, password, confirmPassword, displayName } = req.body;
-
-    if (password !== confirmPassword) {
-      return res.render('register', {
-        message: 'Passwords do not match',
-        GOOGLE_OAUTH: app.locals.GOOGLE_OAUTH,
-        ENTRA_OAUTH: app.locals.ENTRA_OAUTH
-      });
-    }
-
-    if (await store.users.findByUsername(username)) {
-      return res.render('register', {
-        message: 'Username already taken',
-        GOOGLE_OAUTH: app.locals.GOOGLE_OAUTH,
-        ENTRA_OAUTH: app.locals.ENTRA_OAUTH
-      });
-    }
-
-    if (await store.users.findByEmail(email)) {
-      return res.render('register', {
-        message: 'Email already registered',
-        GOOGLE_OAUTH: app.locals.GOOGLE_OAUTH,
-        ENTRA_OAUTH: app.locals.ENTRA_OAUTH
-      });
-    }
-
-    // If Supabase is configured, create user via Supabase Auth and store mapping locally
-    let user = null;
-    if (supabaseAdmin) {
-      try {
-        // Create the user in Supabase Auth (service role key)
-        const supaPayload = {
-          email: email,
-          password: password,
-          user_metadata: { displayName: displayName || username, username }
-        };
-        const supaResp = await supabaseAdmin.auth.admin.createUser(supaPayload);
-        const supaUser = (supaResp && (supaResp.user || supaResp.data)) || null;
-        if (!supaUser) {
-          console.error('Supabase create user error', supaResp.error || supaResp);
-          return res.render('register', { message: 'Registration error (supabase)', GOOGLE_OAUTH: app.locals.GOOGLE_OAUTH, ENTRA_OAUTH: app.locals.ENTRA_OAUTH });
-        }
-
-        // Persist a local user record for compatibility with the existing app
-        user = {
-          id: supaUser.id,
-          username,
-          email,
-          password: null,
-          displayName: displayName || username,
-          authProvider: 'supabase'
-        };
-        await store.users.create(user);
-        // mark mapping uid
-        await store.users.update(user.id, { uid: supaUser.id });
-      } catch (e) {
-        console.error('Supabase create user exception', e && e.message);
-        return res.render('register', { message: 'Registration error', GOOGLE_OAUTH: app.locals.GOOGLE_OAUTH, ENTRA_OAUTH: app.locals.ENTRA_OAUTH });
-      }
-    } else {
-      const hashedPassword = bcrypt.hashSync(password, 10);
-      user = {
-        id: uuidv4(),
-        username,
-        email,
-        password: hashedPassword,
-        displayName: displayName || username,
-        authProvider: 'local'
-      };
-
-      await store.users.create(user);
-    }
-    // Create an email verification token and send verification email (if mail configured)
-    try {
-      const token = crypto.randomBytes(32).toString('hex');
-      const expiresAt = new Date(Date.now() + 1000 * 60 * 60 * 24).toISOString(); // 24 hours
-      await store.verifications.create(token, user.id, expiresAt);
-      const base = app.locals.BASE_URL;
-      const verifyUrl = `${base}/verify/${token}`;
-      const mailOpts = {
-        to: user.email,
-        subject: 'Verify your VibeNest account',
-        text: `Please verify your VibeNest account by visiting: ${verifyUrl}`,
-        html: `<p>Hi ${user.displayName || user.username},</p>
-               <p>Welcome to VibeNest! Click the link below to verify your email address (valid for 24 hours):</p>
-               <p><a href="${verifyUrl}">${verifyUrl}</a></p>
-               <p>If you didn't create an account, ignore this email.</p>`
-      };
-      await sendMail(mailOpts);
-    } catch (e) {
-      console.error('Error sending verification email:', e && e.message);
-    }
-
-    req.logIn(user, (err) => {
-      if (err) return res.redirect('/register');
-      res.redirect('/');
-    });
-  } catch (err) {
-    console.error(err);
-    res.render('register', {
-      message: 'Registration error',
-      GOOGLE_OAUTH: app.locals.GOOGLE_OAUTH,
-      ENTRA_OAUTH: app.locals.ENTRA_OAUTH
-    });
-  }
+  res.status(403).render('error', { error: 'Registration is disabled. Use Supabase Auth to create accounts.' });
 });
 
-// Handle local login
-app.post('/login', async (req, res, next) => {
-  try {
-    const { username, password } = req.body;
-    // Support login by username or email
-    let user = await store.users.findByUsername(username) || await store.users.findByEmail(username);
-    if (!user) {
-      return res.render('login', { message: 'Invalid credentials', GOOGLE_OAUTH: app.locals.GOOGLE_OAUTH, ENTRA_OAUTH: app.locals.ENTRA_OAUTH });
-    }
-
-    let authOk = false;
-
-    // If Supabase is configured prefer Supabase auth for password verification
-    if (supabaseAdmin) {
-      try {
-        const { data, error } = await supabaseAdmin.auth.signInWithPassword({ email: user.email, password });
-        if (!error && data && data.user) {
-          authOk = true;
-        }
-      } catch (e) {
-        console.error('Supabase signIn error:', e && e.message);
-      }
-    }
-
-    // Fallback: local password check
-    if (!authOk) {
-      if (user.password && bcrypt.compareSync(password, user.password)) authOk = true;
-    }
-
-    if (!authOk) {
-      return res.render('login', { message: 'Invalid credentials', GOOGLE_OAUTH: app.locals.GOOGLE_OAUTH, ENTRA_OAUTH: app.locals.ENTRA_OAUTH });
-    }
-    // Check if user is verified
-    if (!user.verified) {
-      req.logOut(() => {});
-      return res.render('login', {
-        message: 'Please verify your email before logging in',
-        GOOGLE_OAUTH: app.locals.GOOGLE_OAUTH,
-        ENTRA_OAUTH: app.locals.ENTRA_OAUTH
-      });
-    }
-    // If the user has 2FA enabled, start the 2FA flow instead of logging in directly
-    if (user.is2FAEnabled && user.is2FAEnabled !== 'none') {
-      try {
-        // Generate a short 6-digit code for email 2FA (if configured)
-            if (user.is2FAEnabled === 'email') {
-              const code = Math.floor(100000 + Math.random() * 900000).toString();
-              const expiresAt = Date.now() + 1000 * 60 * 10; // 10 minutes
-              // Attach debug code for development if mailer isn't configured or in development mode
-              const debug = (process.env.NODE_ENV !== 'production');
-              req.session.twoFactor = { userId: user.id, method: 'email', code, expiresAt, debug };
-              try {
-                await sendMail({
-                  to: user.email,
-                  subject: 'Your VibeNest login code',
-                  text: `Your VibeNest login code: ${code}`,
-                  html: `<p>Your VibeNest login code: <strong>${code}</strong></p>`
-                });
-                // mark success
-                req.session.twoFactor = { ...req.session.twoFactor, emailDeliveryFailed: false };
-              } catch (e) {
-                console.error('2FA email send error:', e && e.message);
-                // mark delivery failure so the /2fa-login view can show a notice
-                req.session.twoFactor = { ...req.session.twoFactor, emailDeliveryFailed: true };
-              }
-              return res.redirect('/2fa-login');
-            }
-        // Support authenticator (TOTP) 2FA
-        if (user.is2FAEnabled === 'authenticator') {
-          // Prepare a 2FA session marker and redirect to the 2FA form
-          const expiresAt = Date.now() + 1000 * 60 * 10; // 10 minutes
-          req.session.twoFactor = { userId: user.id, method: 'authenticator', expiresAt };
-          return res.redirect('/2fa-login');
-        }
-      } catch (e) {
-        console.error('2FA email send error:', e && e.message);
-        // continue to login if the 2FA step fails to send
-      }
-    }
-
-    req.logIn(user, (err) => {
-      if (err) {
-        return res.render('login', {
-          message: 'Login error',
-          GOOGLE_OAUTH: app.locals.GOOGLE_OAUTH,
-          ENTRA_OAUTH: app.locals.ENTRA_OAUTH
-        });
-      }
-      return res.redirect('/');
-    });
-  } catch (err) {
-    console.error('Login handler error:', err && err.message);
-    return res.render('login', {
-      message: 'Login error',
-      GOOGLE_OAUTH: app.locals.GOOGLE_OAUTH,
-      ENTRA_OAUTH: app.locals.ENTRA_OAUTH
-    });
-  }
+// Local login disabled — use Supabase Auth for user authentication in production
+app.post('/login', async (req, res) => {
+  res.status(403).render('error', { error: 'Login is disabled. Authenticate via Supabase Auth.' });
 });
 
 // 2FA Login Form
@@ -1023,81 +862,12 @@ app.post('/api/2fa/backup-codes/regenerate', isAuthenticated, async (req, res) =
   }
 });
 
-// Google OAuth
-app.get('/auth/google', passport.authenticate('google', { scope: ['profile', 'email'] }));
-app.get('/auth/google/callback', (req, res, next) => {
-  passport.authenticate('google', async (err, user, info) => {
-    if (err) return next(err);
-    if (!user) return res.redirect('/login');
-    // If user has 2FA enabled, start 2FA flow
-    if (user.is2FAEnabled && user.is2FAEnabled !== 'none') {
-      if (user.is2FAEnabled === 'email') {
-        const code = Math.floor(100000 + Math.random() * 900000).toString();
-        req.session.twoFactor = { userId: user.id, method: 'email', code, expiresAt: Date.now() + 1000 * 60 * 10 };
-        try {
-          await sendMail({
-            to: user.email,
-            subject: 'Your login code',
-            text: `Your login code: ${code}`,
-            html: `<p>Your login code: <strong>${code}</strong></p>`
-          });
-          req.session.twoFactor = { ...req.session.twoFactor, emailDeliveryFailed: false };
-        } catch (e) {
-          console.error('2FA send error (google):', e && e.message);
-          req.session.twoFactor = { ...req.session.twoFactor, emailDeliveryFailed: true };
-        }
-        return res.redirect('/2fa-login');
-      }
-      if (user.is2FAEnabled === 'authenticator') {
-        req.session.twoFactor = { userId: user.id, method: 'authenticator', expiresAt: Date.now() + 1000 * 60 * 10 };
-        return res.redirect('/2fa-login');
-      }
-    }
-    req.logIn(user, (err) => {
-      if (err) return next(err);
-      return res.redirect('/');
-    });
-  })(req, res, next);
-});
-
-// Entra ID OAuth
-app.get('/auth/entra', passport.authenticate('microsoft', { scope: ['user.read'] }));
-app.get('/auth/entra/callback', (req, res, next) => {
-  passport.authenticate('microsoft', async (err, user, info) => {
-    if (err) return next(err);
-    if (!user) return res.redirect('/login');
-    if (user.is2FAEnabled && user.is2FAEnabled !== 'none') {
-      if (user.is2FAEnabled === 'email') {
-        const code = Math.floor(100000 + Math.random() * 900000).toString();
-        req.session.twoFactor = { userId: user.id, method: 'email', code, expiresAt: Date.now() + 1000 * 60 * 10 };
-        try {
-          await sendMail({
-            to: user.email,
-            subject: 'Your VibeNest login code',
-            text: `Your login code: ${code}`,
-            html: `<p>Your login code: <strong>${code}</strong></p>`
-          });
-        } catch (e) {
-          console.error('2FA send error (entra):', e && e.message);
-        }
-        return res.redirect('/2fa-login');
-      }
-      if (user.is2FAEnabled === 'authenticator') {
-        req.session.twoFactor = { userId: user.id, method: 'authenticator', expiresAt: Date.now() + 1000 * 60 * 10 };
-        return res.redirect('/2fa-login');
-      }
-    }
-    req.logIn(user, (err) => {
-      if (err) return next(err);
-      return res.redirect('/');
-    });
-  })(req, res, next);
-});
+// OAuth routes previously handled by local Passport strategies have been removed.
+// In production Supabase Auth handles OAuth and the client should perform sign-in there.
 
 // Logout
 app.get('/logout', (req, res) => {
-  req.logOut((err) => {
-    if (err) return res.status(500).send('Logout failed');
+  req.logOut(() => {
     res.redirect('/login');
   });
 });
@@ -1722,10 +1492,16 @@ app.delete('/api/video-comments/:videoCommentId', isAuthenticated, async (req, r
     res.status(500).json({ error: err.message });
   }
 });
-
 // ====================
 // Error Handling
 // ====================
+
+// 404 handler (catch undefined routes)
+app.use((req, res, next) => {
+  res.status(404).render('error', { error: 'Page not found', user: req.user || null });
+});
+
+// Error handler (must come after 404 handler)
 app.use((err, req, res, next) => {
   console.error(err);
   res.status(500).render('error', { error: err.message || 'Something went wrong', user: req.user || null });
