@@ -15,7 +15,6 @@ dotenv.config();
 import { authenticator } from 'otplib';
 import QRCode from 'qrcode';
 import supabaseDb from './lib/supabaseDb.js';
-import { initializeDb, users, photos, likes, comments, videos, videoLikes, videoComments, passwordResets, verifications, backupCodes } from './db.js';
 import crypto from 'crypto';
 import nodemailer from 'nodemailer';
 import Mailjet from 'node-mailjet';
@@ -24,6 +23,8 @@ import fs from 'fs';
 // Import supabase AFTER dotenv.config() is called
 const supabaseAdminModule = await import('./lib/supabaseServer.js');
 const supabaseAdmin = supabaseAdminModule.default;
+
+console.log('[SERVER] Supabase admin client:', supabaseAdmin ? '✓ Loaded' : '✗ NULL');
 
 // Mailjet integration (will create a Nodemailer-compatible transporter wrapper)
 let mailjetTransporter;
@@ -55,7 +56,7 @@ app.set('trust proxy', 1);
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static(join(__dirname, 'public')));
-app.use('/uploads', express.static(join(__dirname, 'uploads')));
+// No local /uploads route - all files served from Supabase storage
 
 // Expose whether Supabase is configured for views/clients
 app.locals.SUPABASE_ENABLED = !!(process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY && process.env.SUPABASE_BUCKET);
@@ -75,10 +76,21 @@ app.use((req, res, next) => {
   // Attach simple session-based auth helpers (compatible with existing uses of req.logIn/req.logOut/req.isAuthenticated)
   req.isAuthenticated = () => !!(req.session && req.session.userId);
   req.logIn = (user, cb) => {
-    if (req.session) req.session.userId = user.id;
-    req.user = user;
-    res.locals.user = user;
-    if (cb) cb(null);
+    if (req.session) {
+      req.session.userId = user.id;
+      // IMPORTANT: Save session synchronously before callback to ensure cookie is set
+      req.session.save((err) => {
+        if (err && cb) return cb(err);
+        req.user = user;
+        res.locals.user = user;
+        console.log('[MIDDLEWARE] logIn: Session saved for user', user.id, 'sessionID:', req.sessionID);
+        if (cb) cb(null);
+      });
+    } else {
+      req.user = user;
+      res.locals.user = user;
+      if (cb) cb(null);
+    }
   };
   req.logOut = (cb) => {
     if (req.session) delete req.session.userId;
@@ -90,6 +102,7 @@ app.use((req, res, next) => {
   // Make auth flags available to templates
   res.locals.GOOGLE_OAUTH = app.locals.GOOGLE_OAUTH;
   res.locals.ENTRA_OAUTH = app.locals.ENTRA_OAUTH;
+  res.locals.SUPABASE_ENABLED = app.locals.SUPABASE_ENABLED;
   res.locals.user = req.user || null;
   next();
 });
@@ -97,31 +110,9 @@ app.use((req, res, next) => {
 // ====================
 // Multer Setup
 // ====================
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, join(__dirname, 'uploads'));
-  },
-  filename: (req, file, cb) => {
-    const uniqueName = `${Date.now()}-${uuidv4()}${file.originalname.substring(file.originalname.lastIndexOf('.'))}`;
-    cb(null, uniqueName);
-  }
-});
-
-const upload = multer({ 
-  storage,
-  fileFilter: (req, file, cb) => {
-    const isImage = file.mimetype.startsWith('image/');
-    const isVideo = file.mimetype.startsWith('video/');
-    if (isImage || isVideo) {
-      cb(null, true);
-    } else {
-      cb(new Error('Only image and video files allowed'));
-    }
-  }
-});
-
-// memory storage variant for direct-to-supabase uploads
-const uploadMemory = multer({ storage: multer.memoryStorage(),
+// Memory storage only - all files go to Supabase storage
+const uploadMemory = multer({ 
+  storage: multer.memoryStorage(),
   fileFilter: (req, file, cb) => {
     const isImage = file.mimetype.startsWith('image/');
     const isVideo = file.mimetype.startsWith('video/');
@@ -162,14 +153,25 @@ const isAuthenticated = (req, res, next) => {
   res.redirect('/login');
 };
 
-// Choose a data store implementation: prefer Supabase (if configured) otherwise local sqlite
-const store = supabaseAdmin ? supabaseDb : { users, photos, likes, comments, videos, videoLikes, videoComments, passwordResets, verifications, backupCodes };
+// Use ONLY Supabase - no local database fallback
+console.log('[SERVER] Checking Supabase configuration...');
+console.log('[SERVER] supabaseAdmin:', supabaseAdmin ? 'NOT NULL' : 'IS NULL');
+console.log('[SERVER] SUPABASE_URL:', process.env.SUPABASE_URL ? '✓' : '✗');
+console.log('[SERVER] SUPABASE_SERVICE_ROLE_KEY:', process.env.SUPABASE_SERVICE_ROLE_KEY ? '✓' : '✗');
+
+if (!supabaseAdmin) {
+  console.error('ERROR: Supabase is required but not configured. Please set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in your .env');
+  process.exit(1);
+}
+console.log('[SERVER] ✓ Supabase is configured correctly');
+// Keep `store` alias for compatibility while we migrate all references to `supabaseDb`.
+const store = supabaseDb;
 
 // If a session has a userId, load the full user from the chosen store and attach to req/res.locals
 app.use(async (req, res, next) => {
   try {
     if (req.session && req.session.userId && !req.user) {
-      const u = await store.users.findById(req.session.userId);
+      const u = await supabaseDb.users.findById(req.session.userId);
       if (u) {
         req.user = u;
         res.locals.user = u;
@@ -213,6 +215,30 @@ const sendMail = async (opts) => {
 // Routes
 // ====================
 
+// Client-side console logging - captures browser console logs and displays them in terminal
+app.post('/api/client-log', express.json(), (req, res) => {
+  const { level, messages, url, timestamp } = req.body || {};
+  const levelEmoji = {
+    'log': '📝',
+    'warn': '⚠️ ',
+    'error': '❌',
+    'info': 'ℹ️ ',
+    'debug': '🐛',
+    'group': '📦'
+  }[level] || '📝';
+  
+  const timeStr = new Date(timestamp).toLocaleTimeString();
+  const msgStr = (messages || []).map(m => {
+    if (typeof m === 'object') {
+      try { return JSON.stringify(m, null, 2); } catch (e) { return String(m); }
+    }
+    return String(m);
+  }).join(' ');
+  
+  console.log(`[CLIENT ${timeStr}] ${levelEmoji} ${level.toUpperCase()}: ${msgStr}`);
+  res.json({ received: true });
+});
+
 // Quick Supabase health check (requires SUPABASE_SERVICE_ROLE_KEY)
 app.get('/api/supabase/health', async (req, res) => {
   try {
@@ -228,10 +254,16 @@ app.get('/api/supabase/health', async (req, res) => {
 });
 
 // Bridge for client-side Supabase auth -> server session
+// This endpoint ensures the user exists in Supabase, creates profile if needed, and establishes server session
 app.post('/auth/supabase/session', async (req, res) => {
   try {
+    // Ensure CORS headers are set
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'POST');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    
     const { access_token, userId } = req.body || {};
-    console.log('[AUTH] ===== Supabase Session Request Start =====');
+    console.log('\n[AUTH] ===== Supabase Session Request Start =====');
     console.log('[AUTH] Body:', { access_token: access_token ? `(${access_token.length} chars)` : 'missing', userId });
     console.log('[AUTH] Headers:', { 
       origin: req.headers.origin, 
@@ -244,100 +276,204 @@ app.post('/auth/supabase/session', async (req, res) => {
     let supaUser = null;
     if (supabaseAdmin && access_token) {
       try {
-        // supabaseAdmin.auth.getUser expects an object param in newer SDKs; support both shapes
-        let resp;
+        console.log('[AUTH] 🔍 Attempting to verify access token with multiple strategies...');
+        let resp = null;
+        
+        // Try 1: getUser with direct token
         try {
+          console.log('[AUTH]   Trying getUser(access_token)...');
           resp = await supabaseAdmin.auth.getUser(access_token);
-        } catch (e) {
-          // fallback to object shape
-          resp = await supabaseAdmin.auth.getUser({ access_token });
+          supaUser = (resp && (resp.data && resp.data.user)) || resp.user || null;
+          if (supaUser) console.log('[AUTH]   ✓ getUser(access_token) success');
+        } catch (e1) {
+          console.log('[AUTH]   ⚠️  getUser(access_token) failed:', e1?.message);
+          
+          // Try 2: getUser with object shape
+          try {
+            console.log('[AUTH]   Trying getUser({ access_token })...');
+            resp = await supabaseAdmin.auth.getUser({ access_token });
+            supaUser = (resp && (resp.data && resp.data.user)) || resp.user || null;
+            if (supaUser) console.log('[AUTH]   ✓ getUser({ access_token }) success');
+          } catch (e2) {
+            console.log('[AUTH]   ⚠️  getUser({ access_token }) failed:', e2?.message);
+            
+            // Try 3: admin.getUserById if we have userId
+            if (userId) {
+              try {
+                console.log('[AUTH]   Trying admin.getUserById(userId)...');
+                resp = await supabaseAdmin.auth.admin.getUserById(userId);
+                supaUser = (resp && (resp.user || resp.data)) || resp;
+                if (supaUser) console.log('[AUTH]   ✓ admin.getUserById success');
+              } catch (e3) {
+                console.log('[AUTH]   ⚠️  admin.getUserById failed:', e3?.message);
+              }
+            }
+          }
         }
-        supaUser = (resp && (resp.data && resp.data.user)) || resp.user || null;
+        
+        console.log('[AUTH] Token verification result:', supaUser ? `✓ Found (${supaUser.id})` : '✗ Not found');
       } catch (e) {
-        console.warn('Unable to fetch supabase user by token:', e && e.message);
+        console.warn('[AUTH] ⚠️  Unexpected error during token verification:', e && e.message);
       }
     }
 
-    // If client provided only userId, or token resolved to an id, try to use that
+    // Determine target user ID
     const targetId = (supaUser && supaUser.id) || userId;
+    console.log('[AUTH] Target ID:', targetId ? targetId.substring(0, 8) + '...' : '❌ MISSING');
 
-    if (!targetId) return res.status(400).json({ error: 'Missing supabase access token or userId' });
+    if (!targetId) {
+      console.error('[AUTH] ❌ Missing both access_token and userId');
+      return res.status(400).json({ error: 'Missing supabase access token or userId' });
+    }
 
-    // Try to find a local user mapping first
-    let localUser = await store.users.findById(targetId);
+    // Check if user exists locally
+    console.log('[AUTH] 🔍 Looking up user in local database...');
+    let localUser = await supabaseDb.users.findById(targetId);
+    console.log('[AUTH] Local user lookup:', localUser ? `✓ Found (${localUser.username})` : '✗ Not found');
 
-    // If not found locally, and supabaseAdmin can fetch user info, create a local mapping
+    // If not found locally, fetch from Supabase and create mapping
     if (!localUser && supabaseAdmin) {
       try {
-        // Attempt to fetch the user record via admin API (getUserById may exist)
-        let fetched = null;
-        try {
-          const adminResp = await supabaseAdmin.auth.admin.getUserById(targetId);
-          fetched = (adminResp && adminResp.user) || adminResp;
-        } catch (e) {
-          // fallback to fetching via profiles table
-          const { data: pData, error: pErr } = await supabaseAdmin.from('profiles').select('username,display_name').eq('id', targetId).limit(1).single();
-          if (!pErr && pData) fetched = { id: targetId, user_metadata: { username: pData.username, displayName: pData.display_name } };
+        console.log('[AUTH] 🆕 User not found locally, fetching from Supabase...');
+        
+        let supaAuthUser = null;
+        let supaProfile = null;
+
+        // Try to get auth user details via multiple methods
+        if (!supaUser && targetId) {
+          try {
+            console.log('[AUTH]   Fetching Supabase auth user via admin.getUserById...');
+            const adminResp = await supabaseAdmin.auth.admin.getUserById(targetId);
+            supaUser = (adminResp && (adminResp.user || adminResp.data)) || adminResp;
+            if (supaUser) console.log('[AUTH]   ✓ Got auth user');
+          } catch (e) {
+            console.log('[AUTH]   ⚠️  Could not fetch auth user:', e?.message);
+          }
         }
-        if (fetched) {
-          const email = fetched.email || (fetched.user_metadata && fetched.user_metadata.email) || null; // might be missing
-          const username = (fetched.user_metadata && (fetched.user_metadata.username || fetched.user_metadata.displayName)) || `supa-${targetId.slice(0,8)}`;
+
+        // Try to get profile from profiles table
+        try {
+          console.log('[AUTH]   Fetching user profile from Supabase profiles table...');
+          const { data: pData, error: pErr } = await supabaseAdmin
+            .from('profiles')
+            .select('*')
+            .eq('id', targetId)
+            .limit(1)
+            .single();
+          
+          if (!pErr && pData) {
+            supaProfile = pData;
+            console.log('[AUTH]   ✓ Got profile:', supaProfile.username);
+          } else {
+            console.log('[AUTH]   ⚠️  Profile query error:', pErr?.message || 'No data');
+          }
+        } catch (e) {
+          console.log('[AUTH]   ⚠️  Profile fetch exception:', e?.message);
+        }
+
+        // Build local user from collected data
+        if (supaUser || supaProfile) {
+          const email = (supaUser && supaUser.email) || (supaProfile && supaProfile.email) || 'unknown@oauth.local';
+          const username = (supaProfile && supaProfile.username) || 
+                          (supaUser && supaUser.user_metadata && supaUser.user_metadata.username) ||
+                          `oauth-${targetId.slice(0, 8)}`;
+          const displayName = (supaProfile && supaProfile.display_name) ||
+                            (supaUser && supaUser.user_metadata && supaUser.user_metadata.displayName) ||
+                            username;
+
           localUser = {
             id: targetId,
             uid: targetId,
             username: username,
-            email: email || `${username}@local.invalid`,
-            displayName: fetched.user_metadata && (fetched.user_metadata.displayName || fetched.user_metadata.display_name) || username,
-            authProvider: 'supabase'
+            email: email,
+            displayName: displayName,
+            authProvider: 'supabase',
+            verified: 1  // OAuth users are verified
           };
-          // persist mapping so future lookups succeed
-          try { await store.users.create(localUser); } catch (e) { /* ignore create errors */ }
+
+          console.log('[AUTH] 📝 Creating local user mapping:', localUser.username, '(', email, ')');
+          try { 
+            await supabaseDb.users.create(localUser); 
+            console.log('[AUTH] ✓ Local user mapping created successfully');
+          } catch (createErr) { 
+            console.log('[AUTH] ⚠️  Local user creation error (may already exist):', createErr?.message);
+            // Try to fetch again in case it was created concurrently
+            const retryUser = await supabaseDb.users.findById(targetId);
+            if (retryUser) {
+              localUser = retryUser;
+              console.log('[AUTH] ✓ Retrieved user after creation attempt');
+            }
+          }
+        } else {
+          console.log('[AUTH] ❌ Could not fetch user details from Supabase');
+        }
+
+        // If still no user, create profile in Supabase if service role available
+        if (!localUser && supabaseAdmin) {
+          try {
+            console.log('[AUTH] 🆕 Creating profile in Supabase profiles table...');
+            const defaultUsername = `user-${targetId.slice(0, 8)}`;
+            const { error: insertErr } = await supabaseAdmin
+              .from('profiles')
+              .insert({
+                id: targetId,
+                username: defaultUsername,
+                display_name: defaultUsername,
+                created_at: new Date().toISOString()
+              });
+            
+            if (insertErr) {
+              console.log('[AUTH] ⚠️  Supabase profile insert error:', insertErr?.message);
+            } else {
+              console.log('[AUTH] ✓ Supabase profile created successfully');
+              // Create local mapping
+              localUser = {
+                id: targetId,
+                uid: targetId,
+                username: defaultUsername,
+                email: `${defaultUsername}@oauth.local`,
+                displayName: defaultUsername,
+                authProvider: 'supabase',
+                verified: 1
+              };
+              try {
+                await supabaseDb.users.create(localUser);
+                console.log('[AUTH] ✓ Local mapping created after profile creation');
+              } catch (e) {
+                console.log('[AUTH] ⚠️  Local mapping creation failed:', e?.message);
+              }
+            }
+          } catch (e) {
+            console.log('[AUTH] ⚠️  Error creating Supabase profile:', e?.message);
+          }
         }
       } catch (e) {
-        console.error('Error ensuring local mapping for supabase user:', e && e.message);
+        console.error('[AUTH] ❌ Error during Supabase fetch and mapping:', e && e.message, e);
       }
     }
 
     if (!localUser) {
-      console.error('[AUTH] No local user found for ID:', targetId);
-      return res.status(404).json({ error: 'User not found locally' });
+      console.error('[AUTH] ❌ Could not create or retrieve user for ID:', targetId);
+      console.log('[AUTH] ===== Supabase Session Request END (FAILED - NO USER) =====\n');
+      return res.status(404).json({ error: 'Could not create or find user' });
     }
 
-    // Log the user in via express/passport session
+    console.log('[AUTH] ✓ User ready, establishing session...');
+    // Log the user in via express session
     req.logIn(localUser, (err) => {
       if (err) {
-        console.error('[AUTH] Failed to create session:', err.message);
-        return res.status(500).json({ error: 'Failed to create session' });
+        console.error('[AUTH] ❌ Failed to create session:', err.message);
+        console.log('[AUTH] ===== Supabase Session Request END (FAILED - SESSION ERROR) =====\n');
+        return res.status(500).json({ error: 'Failed to create session: ' + err.message });
       }
-      console.log('[AUTH] Successfully logged in user:', localUser.username, 'sessionID:', req.sessionID);
-      
-      // Ensure session is saved before responding so cookies are properly set
-      req.session.save((saveErr) => {
-        if (saveErr) {
-          console.error('[AUTH] Session save error:', saveErr && saveErr.message);
-          return res.status(500).json({ error: 'Failed to save session' });
-        }
-        
-        // Log the outgoing Set-Cookie header for debugging
-        try {
-          const setCookie = res.getHeader && res.getHeader('Set-Cookie');
-          console.log('[AUTH] Set-Cookie header:', setCookie ? (Array.isArray(setCookie) ? setCookie.map(s => s.toString()) : setCookie.toString()) : 'none');
-        } catch (e) {
-          // ignore header logging failures
-        }
-        
-        // In development, expose the session ID in a response header for easier debugging
-        const isProd = process.env.NODE_ENV === 'production';
-        if (!isProd) {
-          res.setHeader('X-DEV-SESSION-ID', req.sessionID || 'unknown');
-        }
-        
-        return res.json({ ok: true, user: { id: localUser.id, username: localUser.username, email: localUser.email } });
-      });
+      console.log('[AUTH] ✓ Successfully logged in user:', localUser.username, 'sessionID:', req.sessionID);
+      console.log('[AUTH] ===== Supabase Session Request END (SUCCESS) =====\n');
+      return res.json({ ok: true, user: { id: localUser.id, username: localUser.username, email: localUser.email } });
     });
   } catch (err) {
-    console.error('Session bridge error:', err && err.message);
-    return res.status(500).json({ error: 'Internal error' });
+    console.error('[AUTH] ❌ Session bridge error:', err && err.message, err);
+    console.log('[AUTH] ===== Supabase Session Request END (ERROR) =====\n');
+    return res.status(500).json({ error: 'Internal error: ' + (err?.message || 'unknown') });
   }
 });
 
@@ -348,7 +484,7 @@ app.get('/api/resolve-username', async (req, res) => {
     if (!username) return res.status(400).json({ error: 'Missing username' });
 
     // Try local DB first
-    const local = await store.users.findByUsername(username);
+    const local = await supabaseDb.users.findByUsername(username);
     if (local && local.email) return res.json({ email: local.email });
 
     // Next, if Supabase admin client is available, look up the profile and attempt to fetch auth user
@@ -383,8 +519,8 @@ app.get('/', async (req, res) => {
   try {
     // If user is not authenticated, send them to the login page instead
     if (!req.isAuthenticated()) return res.redirect('/login');
-    const allPhotos = await store.photos.getAll();
-    const allVideos = await store.videos.getAll();
+    const allPhotos = await supabaseDb.photos.getAll();
+    const allVideos = await supabaseDb.videos.getAll();
     
     // Combine photos and videos, adding type field
     const allPhotosWithType = allPhotos.map(p => ({ ...p, type: 'photo' }));
@@ -410,7 +546,7 @@ app.post('/reset', async (req, res) => {
     const { email } = req.body;
     if (!email) return res.render('reset_request', { message: 'Please provide your email' });
 
-    const user = await store.users.findByEmail(email);
+    const user = await supabaseDb.users.findByEmail(email);
     if (!user) {
       // Do not reveal whether the email exists — show success message anyway
       return res.render('reset_sent');
@@ -418,7 +554,7 @@ app.post('/reset', async (req, res) => {
 
     const token = crypto.randomBytes(32).toString('hex');
     const expiresAt = new Date(Date.now() + 1000 * 60 * 60).toISOString(); // 1 hour
-    await store.passwordResets.create(token, user.id, expiresAt);
+    await supabaseDb.passwordResets.create(token, user.id, expiresAt);
 
     const base = process.env.BASE_URL || process.env.APP_URL || `http://localhost:${process.env.PORT || 3000}`;
     const resetUrl = `${base}/reset/${token}`;
@@ -445,10 +581,10 @@ app.post('/reset', async (req, res) => {
 app.get('/reset/:token', async (req, res) => {
   try {
     const token = req.params.token;
-    const record = await store.passwordResets.findByToken(token);
+    const record = await supabaseDb.passwordResets.findByToken(token);
     if (!record) return res.render('reset_request', { message: 'Invalid or expired token' });
     if (new Date(record.expiresAt) < new Date()) {
-      await store.passwordResets.deleteByToken(token);
+      await supabaseDb.passwordResets.deleteByToken(token);
       return res.render('reset_request', { message: 'Token expired' });
     }
     res.render('reset', { token, error: null });
@@ -463,17 +599,17 @@ app.post('/reset-password', async (req, res) => {
   try {
     const { token, newPassword } = req.body;
     if (!token || !newPassword) return res.render('reset', { token, error: 'Missing token or password' });
-    const record = await store.passwordResets.findByToken(token);
+    const record = await supabaseDb.passwordResets.findByToken(token);
     if (!record) return res.render('reset', { token: null, error: 'Invalid or expired token' });
     if (new Date(record.expiresAt) < new Date()) {
-      await store.passwordResets.deleteByToken(token);
+      await supabaseDb.passwordResets.deleteByToken(token);
       return res.render('reset', { token: null, error: 'Token expired' });
     }
 
     // Update user's password
     const hashed = bcrypt.hashSync(newPassword, 10);
-    await store.users.update(record.userId, { password: hashed });
-    await store.passwordResets.deleteByToken(token);
+    await supabaseDb.users.update(record.userId, { password: hashed });
+    await supabaseDb.passwordResets.deleteByToken(token);
 
     res.redirect('/login?message=Password%20updated%20successfully');
   } catch (err) {
@@ -498,13 +634,37 @@ app.get('/login', (req, res) => {
 
 // OAuth redirect routes - redirect to Supabase's OAuth endpoints
 app.get('/auth/google', (req, res) => {
-  const redirectTo = encodeURIComponent('https://rfhitxqaihbqmiakbnxa.supabase.co/auth/v1/callback');
-  res.redirect(`https://rfhitxqaihbqmiakbnxa.supabase.co/auth/v1/authorize?provider=google&redirect_to=${redirectTo}`);
+  const baseUrl = process.env.BASE_URL || process.env.APP_URL || `http://localhost:${process.env.PORT || 3000}`;
+  const callbackUrl = `${baseUrl}/auth/callback`;
+  const redirectTo = encodeURIComponent(callbackUrl);
+  const supabaseUrl = process.env.SUPABASE_URL;
+  console.log('[OAUTH] 🔐 Google OAuth initiated');
+  console.log('[OAUTH] Callback URL:', callbackUrl);
+  console.log('[OAUTH] Redirect to Supabase:', `${supabaseUrl}/auth/v1/authorize?provider=google&redirect_to=${redirectTo}`);
+  res.redirect(`${supabaseUrl}/auth/v1/authorize?provider=google&redirect_to=${redirectTo}`);
 });
 
 app.get('/auth/entra', (req, res) => {
-  const redirectTo = encodeURIComponent('https://rfhitxqaihbqmiakbnxa.supabase.co/auth/v1/callback');
-  res.redirect(`https://rfhitxqaihbqmiakbnxa.supabase.co/auth/v1/authorize?provider=azure&redirect_to=${redirectTo}`);
+  const baseUrl = process.env.BASE_URL || process.env.APP_URL || `http://localhost:${process.env.PORT || 3000}`;
+  const callbackUrl = `${baseUrl}/auth/callback`;
+  const redirectTo = encodeURIComponent(callbackUrl);
+  const supabaseUrl = process.env.SUPABASE_URL;
+  console.log('[OAUTH] 🔐 Entra (Azure) OAuth initiated');
+  console.log('[OAUTH] Callback URL:', callbackUrl);
+  console.log('[OAUTH] Redirect to Supabase:', `${supabaseUrl}/auth/v1/authorize?provider=azure&redirect_to=${redirectTo}`);
+  res.redirect(`${supabaseUrl}/auth/v1/authorize?provider=azure&redirect_to=${redirectTo}`);
+});
+
+// OAuth callback handler - Supabase redirects here with session tokens in URL fragments
+app.get('/auth/callback', (req, res) => {
+  console.log('[OAUTH] 📍 Callback received');
+  console.log('[OAUTH] URL:', req.originalUrl);
+  console.log('[OAUTH] Query:', req.query);
+  
+  // The tokens are in URL fragments (#), not query params
+  // Browser will handle this client-side via supabase-auth.js
+  // Just render a page that will process the fragments
+  res.render('oauth-callback', { SUPABASE_URL: process.env.SUPABASE_URL, SUPABASE_ANON_KEY: process.env.SUPABASE_ANON_KEY });
 });
 
 // In-memory authorization code store (dev-only, short-lived)
@@ -595,14 +755,14 @@ app.post('/forgot-password', async (req, res) => {
     const { email } = req.body;
     if (!email) return res.render('forogt-password', { error: 'Please provide your email' });
 
-    const user = await store.users.findByEmail(email);
+    const user = await supabaseDb.users.findByEmail(email);
     if (!user) {
       return res.render('reset_sent');
     }
 
     const token = crypto.randomBytes(32).toString('hex');
     const expiresAt = new Date(Date.now() + 1000 * 60 * 60).toISOString(); // 1 hour
-    await store.passwordResets.create(token, user.id, expiresAt);
+    await supabaseDb.passwordResets.create(token, user.id, expiresAt);
 
     const base = process.env.BASE_URL || process.env.APP_URL || `http://localhost:${process.env.PORT || 3000}`;
     const resetUrl = `${base}/reset/${token}`;
@@ -630,9 +790,52 @@ app.post('/register', async (req, res) => {
   res.status(403).render('error', { error: 'Registration is disabled. Use Supabase Auth to create accounts.' });
 });
 
+// Client-side Supabase signup will handle account creation
+// This endpoint is called AFTER successful Supabase signup to create the profile entry
+app.post('/api/register-profile', async (req, res) => {
+  try {
+    const { userId, username, displayName, email } = req.body || {};
+    console.log('[REGISTER] 📝 Profile creation request:', { userId: userId?.substring(0, 8), username, displayName, email });
+
+    if (!userId || !username) {
+      return res.status(400).json({ error: 'userId and username required' });
+    }
+
+    // Check if profile already exists
+    console.log('[REGISTER] 🔍 Checking if profile already exists...');
+    const existing = await supabaseDb.users.findById(userId);
+    if (existing) {
+      console.log('[REGISTER] ✓ Profile already exists for', username);
+      return res.json({ ok: true, user: existing });
+    }
+
+    // Create new profile
+    console.log('[REGISTER] 🆕 Creating new profile...');
+    const newUser = {
+      id: userId,
+      username: username,
+      displayName: displayName || username,
+      email: email,
+      authProvider: 'supabase'
+    };
+
+    try {
+      const created = await supabaseDb.users.create(newUser);
+      console.log('[REGISTER] ✓ Profile created successfully:', username);
+      return res.json({ ok: true, user: created });
+    } catch (e) {
+      console.error('[REGISTER] ❌ Failed to create profile:', e?.message);
+      return res.status(500).json({ error: 'Failed to create profile: ' + e?.message });
+    }
+  } catch (err) {
+    console.error('[REGISTER] ❌ Error:', err?.message);
+    return res.status(500).json({ error: err?.message || 'Internal error' });
+  }
+});
+
 // Local login disabled — use Supabase Auth for user authentication in production
 app.post('/login', async (req, res) => {
-  res.status(403).render('error', { error: 'Login is disabled. Authenticate via Supabase Auth.' });
+  res.status(403).render('error', { error: 'Login is disabled. Use Supabase Auth via the client.' });
 });
 
 // 2FA Login Form
@@ -654,7 +857,7 @@ app.post('/2fa-login', async (req, res) => {
     if (twoFactor.method === 'authenticator') {
       const { token, backupCode } = req.body;
       if (!token && !backupCode) return res.render('2fa-login', { error: 'Code or backup code required', twoFactorMethod: 'authenticator' });
-      const user = await store.users.findById(twoFactor.userId);
+      const user = await supabaseDb.users.findById(twoFactor.userId);
       if (!user || !user.twoFactorSecret) return res.render('2fa-login', { error: 'User or secret not found', twoFactorMethod: 'authenticator' });
       authenticator.options = { window: 1 };
       const valid = authenticator.check(String(token).trim(), user.twoFactorSecret);
@@ -662,7 +865,7 @@ app.post('/2fa-login', async (req, res) => {
         // If token isn't valid, check backup codes if provided
         if (backupCode && String(backupCode).trim()) {
           // lookup unused codes for user
-          const rows = await store.backupCodes.findValidByUserAndCode(user.id, null);
+          const rows = await supabaseDb.backupCodes.findValidByUserAndCode(user.id, null);
           let match = null;
           for (const r of rows) {
             try {
@@ -671,7 +874,7 @@ app.post('/2fa-login', async (req, res) => {
           }
           if (match) {
             // mark used and log user in
-            await store.backupCodes.markUsed(match.id);
+            await supabaseDb.backupCodes.markUsed(match.id);
             await new Promise((resolve, reject) => {
               req.logIn(user, (err) => (err ? reject(err) : resolve()));
             });
@@ -706,7 +909,7 @@ app.post('/2fa-verify-email', async (req, res) => {
     if (Date.now() > twoFactor.expiresAt) return res.render('2fa-login', { error: 'Code expired', twoFactorMethod: 'email' });
     if (String(emailToken).trim() !== String(twoFactor.code)) return res.render('2fa-login', { error: 'Invalid code', twoFactorMethod: 'email' });
     // Valid — log in the user
-    const user = await store.users.findById(twoFactor.userId);
+    const user = await supabaseDb.users.findById(twoFactor.userId);
     if (!user) return res.render('2fa-login', { error: 'User not found', twoFactorMethod: 'email' });
     await new Promise((resolve, reject) => {
       req.logIn(user, (err) => (err ? reject(err) : resolve()));
@@ -724,7 +927,7 @@ app.post('/2fa-resend', async (req, res) => {
   try {
     const twoFactor = req.session.twoFactor;
     if (!twoFactor) return res.status(400).json({ error: 'No login pending' });
-    const user = await store.users.findById(twoFactor.userId);
+    const user = await supabaseDb.users.findById(twoFactor.userId);
     if (!user) return res.status(400).json({ error: 'User not found' });
     if (twoFactor.method !== 'email') return res.status(400).json({ error: 'Only email 2FA supported' });
     const code = Math.floor(100000 + Math.random() * 900000).toString();
@@ -806,7 +1009,7 @@ app.post('/2fa-verify-backup', async (req, res) => {
     await supabaseAdmin.from('backup_codes').update({ used: true }).eq('id', matched.id);
 
     // Log in the user and complete the 2FA flow
-    const user = await store.users.findById(targetUserId);
+    const user = await supabaseDb.users.findById(targetUserId);
     if (!user) return res.render('2fa-login', { error: 'User not found', twoFactorMethod: twoFactor.method || 'authenticator' });
 
     await new Promise((resolve, reject) => {
@@ -823,9 +1026,9 @@ app.post('/2fa-verify-backup', async (req, res) => {
 // GET backup codes status (unused count)
 app.get('/api/2fa/backup-codes', isAuthenticated, async (req, res) => {
   try {
-    const user = await store.users.findById(req.user.id);
+    const user = await supabaseDb.users.findById(req.user.id);
     if (!user || user.is2FAEnabled !== 'authenticator') return res.status(400).json({ error: 'Authenticator 2FA not enabled' });
-    const rows = await store.backupCodes.getUnusedByUser(req.user.id);
+    const rows = await supabaseDb.backupCodes.getUnusedByUser(req.user.id);
     res.json({ success: true, unused: rows.length });
   } catch (err) {
     console.error(err);
@@ -836,10 +1039,10 @@ app.get('/api/2fa/backup-codes', isAuthenticated, async (req, res) => {
 // Regenerate backup codes (delete old, create new) — returns the plain codes to present once
 app.post('/api/2fa/backup-codes/regenerate', isAuthenticated, async (req, res) => {
   try {
-    const user = await store.users.findById(req.user.id);
+    const user = await supabaseDb.users.findById(req.user.id);
     if (!user || user.is2FAEnabled !== 'authenticator') return res.status(400).json({ error: 'Authenticator 2FA not enabled' });
 
-    await store.backupCodes.deleteByUser(req.user.id);
+    await supabaseDb.backupCodes.deleteByUser(req.user.id);
     const count = 10;
     const plainCodes = [];
     for (let i = 0; i < count; i++) {
@@ -847,8 +1050,8 @@ app.post('/api/2fa/backup-codes/regenerate', isAuthenticated, async (req, res) =
       const code = `${token.slice(0,4)}-${token.slice(4,8)}`;
       const id = uuidv4();
       const hashed = bcrypt.hashSync(code, 10);
-      if (supabaseAdmin && store.backupCodes && store.backupCodes.insertMany) {
-        await store.backupCodes.insertMany([{ id, user_id: req.user.id, code_hash: hashed }]);
+      if (supabaseAdmin && supabaseDb.backupCodes && supabaseDb.backupCodes.insertMany) {
+        await supabaseDb.backupCodes.insertMany([{ id, user_id: req.user.id, code_hash: hashed }]);
       } else {
         await backupCodes.create(id, req.user.id, hashed);
       }
@@ -919,12 +1122,12 @@ app.post('/resend-verification', async (req, res) => {
   try {
     const { email } = req.body;
     // For privacy, always render check-email even if user not found
-    const user = email ? await store.users.findByEmail(email) : null;
+    const user = email ? await supabaseDb.users.findByEmail(email) : null;
     if (user) {
       // create a new verification token and send link
       const token = crypto.randomBytes(32).toString('hex');
       const expiresAt = new Date(Date.now() + 1000 * 60 * 60 * 24).toISOString(); // 24 hours
-      await store.verifications.create(token, user.id, expiresAt);
+      await supabaseDb.verifications.create(token, user.id, expiresAt);
       const base = app.locals.BASE_URL;
       const verifyUrl = `${base}/verify/${token}`;
       await sendMail({
@@ -957,12 +1160,12 @@ app.post('/admin/resend-verification', isAuthenticated, async (req, res) => {
     const { email } = req.body;
     if (!email) return res.render('resend-verification-admin', { user, message: 'Email required' });
 
-    const target = await store.users.findByEmail(email);
+    const target = await supabaseDb.users.findByEmail(email);
     if (!target) return res.render('resend-verification-admin', { user, message: 'User not found' });
 
     const token = crypto.randomBytes(32).toString('hex');
     const expiresAt = new Date(Date.now() + 1000 * 60 * 60 * 24).toISOString(); // 24 hours
-    await store.verifications.create(token, target.id, expiresAt);
+    await supabaseDb.verifications.create(token, target.id, expiresAt);
 
     const base = app.locals.BASE_URL;
     const verifyUrl = `${base.replace(/\/$/, '')}/verify/${token}`;
@@ -994,8 +1197,8 @@ app.post('/api/settings', isAuthenticated, async (req, res) => {
     if (displayName) updates.displayName = displayName;
     if (typeof bio !== 'undefined') updates.bio = bio;
     if (Object.keys(updates).length === 0) return res.status(400).json({ error: 'No updates provided' });
-    await store.users.update(req.user.id, updates);
-    const updated = await store.users.findById(req.user.id);
+    await supabaseDb.users.update(req.user.id, updates);
+    const updated = await supabaseDb.users.findById(req.user.id);
     res.json({ success: true, user: updated });
   } catch (err) {
     console.error(err);
@@ -1008,23 +1211,9 @@ app.get('/upload', isAuthenticated, (req, res) => {
   res.render('upload', { user: req.user });
 });
 
-// Upload API — handle media uploads
-app.post('/api/upload', isAuthenticated, upload.single('photo'), async (req, res) => {
-  try {
-    const file = req.file;
-    const { caption } = req.body;
-    if (!file) return res.status(400).json({ error: 'File is required' });
-    const isVideo = file.mimetype && file.mimetype.startsWith('video/');
-    if (isVideo) {
-      await store.videos.create({ id: uuidv4(), userId: req.user.id, filename: file.filename, caption });
-    } else {
-      await store.photos.create({ id: uuidv4(), userId: req.user.id, filename: file.filename, caption });
-    }
-    res.json({ success: true });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: err.message });
-  }
+// Upload API — redirect to Supabase upload
+app.post('/api/upload', isAuthenticated, (req, res) => {
+  res.status(403).json({ error: 'Local uploads disabled. Use /api/upload-supabase' });
 });
 
 // New: upload to Supabase Storage and create a record in Supabase `photos` or `videos` tables
@@ -1078,7 +1267,7 @@ app.post('/api/upload-supabase', isAuthenticated, uploadMemory.single('photo'), 
 // Setup 2FA page - show options
 app.get('/setup-2fa', isAuthenticated, async (req, res) => {
   try {
-    const user = await store.users.findById(req.user.id);
+    const user = await supabaseDb.users.findById(req.user.id);
     // If user already has an authenticator secret, show it. Otherwise generate a temporary secret
     let secret = user.twoFactorSecret || null;
     let qrCodeImage = null;
@@ -1106,7 +1295,7 @@ app.get('/setup-2fa', isAuthenticated, async (req, res) => {
 // Enable email 2FA
 app.post('/enable-email-2fa', isAuthenticated, async (req, res) => {
   try {
-    await store.users.update(req.user.id, { is2FAEnabled: 'email' });
+    await supabaseDb.users.update(req.user.id, { is2FAEnabled: 'email' });
     res.render('setup-2fa', { user: req.user, qrCodeImage: null, secret: null, error: null, message: 'Email 2FA enabled', plainCodes: null });
   } catch (err) {
     console.error(err);
@@ -1120,7 +1309,7 @@ app.post('/setup-2fa', isAuthenticated, async (req, res) => {
     const { token } = req.body;
     // Prefer the pending secret in session (generated on GET) otherwise fall back to stored secret
     const pending = req.session.pendingTwoFactorSecret;
-    const user = await store.users.findById(req.user.id);
+    const user = await supabaseDb.users.findById(req.user.id);
     const secret = pending || user.twoFactorSecret;
     if (!secret) return res.render('setup-2fa', { user: req.user, qrCodeImage: null, secret: null, error: 'No secret available to verify', message: null });
 
@@ -1138,7 +1327,7 @@ app.post('/setup-2fa', isAuthenticated, async (req, res) => {
     }
 
     // Valid token: store secret permanently and mark authenticator 2FA enabled
-    await store.users.update(req.user.id, { twoFactorSecret: secret, is2FAEnabled: 'authenticator' });
+    await supabaseDb.users.update(req.user.id, { twoFactorSecret: secret, is2FAEnabled: 'authenticator' });
     delete req.session.pendingTwoFactorSecret;
 
     // Show success and the secret/QR (so user can keep a backup)
@@ -1151,7 +1340,7 @@ app.post('/setup-2fa', isAuthenticated, async (req, res) => {
     // Generate backup codes for the user and present them once
     try {
       // remove old codes
-      await store.backupCodes.deleteByUser(req.user.id);
+      await supabaseDb.backupCodes.deleteByUser(req.user.id);
       const count = 10;
       const plainCodes = [];
       for (let i = 0; i < count; i++) {
@@ -1160,8 +1349,8 @@ app.post('/setup-2fa', isAuthenticated, async (req, res) => {
         const code = `${token.slice(0,4)}-${token.slice(4,8)}`;
         const id = uuidv4();
         const hashed = bcrypt.hashSync(code, 10);
-        if (supabaseAdmin && store.backupCodes && store.backupCodes.insertMany) {
-          await store.backupCodes.insertMany([{ id, user_id: req.user.id, code_hash: hashed }]);
+        if (supabaseAdmin && supabaseDb.backupCodes && supabaseDb.backupCodes.insertMany) {
+          await supabaseDb.backupCodes.insertMany([{ id, user_id: req.user.id, code_hash: hashed }]);
         } else {
           await backupCodes.create(id, req.user.id, hashed);
         }
@@ -1181,7 +1370,7 @@ app.post('/setup-2fa', isAuthenticated, async (req, res) => {
 // Disable 2FA (authenticator or email)
 app.post('/disable-2fa', isAuthenticated, async (req, res) => {
   try {
-    await store.users.update(req.user.id, { is2FAEnabled: 'none', twoFactorSecret: null });
+    await supabaseDb.users.update(req.user.id, { is2FAEnabled: 'none', twoFactorSecret: null });
     res.redirect('/settings');
   } catch (err) {
     console.error('Disable 2FA error:', err);
@@ -1200,15 +1389,15 @@ app.get('/check-email', (req, res) => {
 app.get('/verify/:token', async (req, res) => {
   try {
     const token = req.params.token;
-    const record = await store.verifications.findByToken(token);
+    const record = await supabaseDb.verifications.findByToken(token);
     if (!record) return res.render('verify', { success: false, message: 'Invalid or expired verification token.' });
     if (new Date(record.expiresAt) < new Date()) {
-      await store.verifications.deleteByToken(token);
+      await supabaseDb.verifications.deleteByToken(token);
       return res.render('verify', { success: false, message: 'Verification token expired.' });
     }
     // mark user verified
-    await store.users.update(record.userId, { verified: 1 });
-    await store.verifications.deleteByToken(token);
+    await supabaseDb.users.update(record.userId, { verified: 1 });
+    await supabaseDb.verifications.deleteByToken(token);
     res.render('verify', { success: true, message: 'Your email has been verified. You can now use your account.' });
   } catch (err) {
     console.error(err);
@@ -1228,7 +1417,7 @@ app.get('/verified', (req, res) => {
 // Get all photos
 app.get('/api/photos', async (req, res) => {
   try {
-    const allPhotos = await store.photos.getAll();
+    const allPhotos = await supabaseDb.photos.getAll();
     res.json({ photos: allPhotos });
   } catch (err) {
     console.error(err);
@@ -1239,7 +1428,7 @@ app.get('/api/photos', async (req, res) => {
 // Get all videos
 app.get('/api/videos', async (req, res) => {
   try {
-    const allVideos = await store.videos.getAll();
+    const allVideos = await supabaseDb.videos.getAll();
     res.json({ videos: allVideos });
   } catch (err) {
     console.error(err);
@@ -1250,7 +1439,7 @@ app.get('/api/videos', async (req, res) => {
 // Get user's photos
 app.get('/api/user/:userId/photos', async (req, res) => {
   try {
-    const userPhotos = await store.photos.getByUserId(req.params.userId);
+    const userPhotos = await supabaseDb.photos.getByUserId(req.params.userId);
     res.json({ photos: userPhotos });
   } catch (err) {
     console.error(err);
@@ -1261,7 +1450,7 @@ app.get('/api/user/:userId/photos', async (req, res) => {
 // Get user's videos
 app.get('/api/user/:userId/videos', async (req, res) => {
   try {
-    const userVideos = await store.videos.getByUserId(req.params.userId);
+    const userVideos = await supabaseDb.videos.getByUserId(req.params.userId);
     res.json({ videos: userVideos });
   } catch (err) {
     console.error(err);
@@ -1272,23 +1461,23 @@ app.get('/api/user/:userId/videos', async (req, res) => {
 // Like a photo
 app.post('/api/photos/:photoId/like', isAuthenticated, async (req, res) => {
   try {
-    const photo = await store.photos.findById(req.params.photoId);
+    const photo = await supabaseDb.photos.findById(req.params.photoId);
     if (!photo) {
       return res.status(404).json({ error: 'Photo not found' });
     }
 
-    const existingLike = await store.likes.findByPhotoAndUser(req.params.photoId, req.user.id);
+    const existingLike = await supabaseDb.likes.findByPhotoAndUser(req.params.photoId, req.user.id);
     if (existingLike) {
-      await store.likes.remove(req.params.photoId, req.user.id);
-      const count = await store.likes.countByPhoto(req.params.photoId);
+      await supabaseDb.likes.remove(req.params.photoId, req.user.id);
+      const count = await supabaseDb.likes.countByPhoto(req.params.photoId);
       res.json({ success: true, liked: false, likes: count });
     } else {
-      await store.likes.create({
+      await supabaseDb.likes.create({
         id: uuidv4(),
         photoId: req.params.photoId,
         userId: req.user.id
       });
-      const count = await store.likes.countByPhoto(req.params.photoId);
+      const count = await supabaseDb.likes.countByPhoto(req.params.photoId);
       res.json({ success: true, liked: true, likes: count });
     }
   } catch (err) {
@@ -1300,23 +1489,23 @@ app.post('/api/photos/:photoId/like', isAuthenticated, async (req, res) => {
 // Like a video
 app.post('/api/videos/:videoId/like', isAuthenticated, async (req, res) => {
   try {
-    const video = await store.videos.findById(req.params.videoId);
+    const video = await supabaseDb.videos.findById(req.params.videoId);
     if (!video) {
       return res.status(404).json({ error: 'Video not found' });
     }
 
-    const existingLike = await store.videoLikes.findByVideoAndUser(req.params.videoId, req.user.id);
+    const existingLike = await supabaseDb.videoLikes.findByVideoAndUser(req.params.videoId, req.user.id);
     if (existingLike) {
-      await store.videoLikes.remove(req.params.videoId, req.user.id);
-      const count = await store.videoLikes.countByVideo(req.params.videoId);
+      await supabaseDb.videoLikes.remove(req.params.videoId, req.user.id);
+      const count = await supabaseDb.videoLikes.countByVideo(req.params.videoId);
       res.json({ success: true, liked: false, likes: count });
     } else {
-      await store.videoLikes.create({
+      await supabaseDb.videoLikes.create({
         id: uuidv4(),
         videoId: req.params.videoId,
         userId: req.user.id
       });
-      const count = await store.videoLikes.countByVideo(req.params.videoId);
+      const count = await supabaseDb.videoLikes.countByVideo(req.params.videoId);
       res.json({ success: true, liked: true, likes: count });
     }
   } catch (err) {
@@ -1333,7 +1522,7 @@ app.post('/api/photos/:photoId/comment', isAuthenticated, async (req, res) => {
       return res.status(400).json({ error: 'Comment text required' });
     }
 
-    const photo = await store.photos.findById(req.params.photoId);
+    const photo = await supabaseDb.photos.findById(req.params.photoId);
     if (!photo) {
       return res.status(404).json({ error: 'Photo not found' });
     }
@@ -1345,7 +1534,7 @@ app.post('/api/photos/:photoId/comment', isAuthenticated, async (req, res) => {
       text
     };
 
-    await store.comments.create(comment);
+    await supabaseDb.comments.create(comment);
     const newComment = {
       ...comment,
       username: req.user.username,
@@ -1368,7 +1557,7 @@ app.post('/api/videos/:videoId/comment', isAuthenticated, async (req, res) => {
       return res.status(400).json({ error: 'Comment text required' });
     }
 
-    const video = await store.videos.findById(req.params.videoId);
+    const video = await supabaseDb.videos.findById(req.params.videoId);
     if (!video) {
       return res.status(404).json({ error: 'Video not found' });
     }
@@ -1380,7 +1569,7 @@ app.post('/api/videos/:videoId/comment', isAuthenticated, async (req, res) => {
       text
     };
 
-    await store.videoComments.create(comment);
+    await supabaseDb.videoComments.create(comment);
     const newComment = {
       ...comment,
       username: req.user.username,
@@ -1398,7 +1587,7 @@ app.post('/api/videos/:videoId/comment', isAuthenticated, async (req, res) => {
 // Get comments for a photo
 app.get('/api/photos/:photoId/comments', async (req, res) => {
   try {
-    const photoComments = await store.comments.getByPhoto(req.params.photoId);
+    const photoComments = await supabaseDb.comments.getByPhoto(req.params.photoId);
     res.json({ comments: photoComments });
   } catch (err) {
     console.error(err);
@@ -1409,7 +1598,7 @@ app.get('/api/photos/:photoId/comments', async (req, res) => {
 // Get comments for a video
 app.get('/api/videos/:videoId/comments', async (req, res) => {
   try {
-    const vComments = await store.videoComments.getByVideo(req.params.videoId);
+    const vComments = await supabaseDb.videoComments.getByVideo(req.params.videoId);
     res.json({ comments: vComments });
   } catch (err) {
     console.error(err);
@@ -1420,7 +1609,7 @@ app.get('/api/videos/:videoId/comments', async (req, res) => {
 // Delete a photo (only owner)
 app.delete('/api/photos/:photoId', isAuthenticated, async (req, res) => {
   try {
-    const photo = await store.photos.findById(req.params.photoId);
+    const photo = await supabaseDb.photos.findById(req.params.photoId);
     if (!photo) {
       return res.status(404).json({ error: 'Photo not found' });
     }
@@ -1428,7 +1617,16 @@ app.delete('/api/photos/:photoId', isAuthenticated, async (req, res) => {
       return res.status(403).json({ error: 'Unauthorized' });
     }
 
-    await store.photos.delete(req.params.photoId);
+    // Delete from Supabase storage if filename exists
+    if (photo.filename && supabaseAdmin) {
+      const bucket = process.env.SUPABASE_BUCKET;
+      if (bucket) {
+        const { error: storageErr } = await supabaseAdmin.storage.from(bucket).remove([photo.filename]);
+        if (storageErr) console.error('Storage delete error:', storageErr);
+      }
+    }
+
+    await supabaseDb.photos.delete(req.params.photoId);
     res.json({ success: true });
   } catch (err) {
     console.error(err);
@@ -1439,7 +1637,7 @@ app.delete('/api/photos/:photoId', isAuthenticated, async (req, res) => {
 // Delete a video (only owner)
 app.delete('/api/videos/:videoId', isAuthenticated, async (req, res) => {
   try {
-    const video = await store.videos.findById(req.params.videoId);
+    const video = await supabaseDb.videos.findById(req.params.videoId);
     if (!video) {
       return res.status(404).json({ error: 'Video not found' });
     }
@@ -1447,7 +1645,16 @@ app.delete('/api/videos/:videoId', isAuthenticated, async (req, res) => {
       return res.status(403).json({ error: 'Unauthorized' });
     }
 
-    await store.videos.delete(req.params.videoId);
+    // Delete from Supabase storage if filename exists
+    if (video.filename && supabaseAdmin) {
+      const bucket = process.env.SUPABASE_BUCKET;
+      if (bucket) {
+        const { error: storageErr } = await supabaseAdmin.storage.from(bucket).remove([video.filename]);
+        if (storageErr) console.error('Storage delete error:', storageErr);
+      }
+    }
+
+    await supabaseDb.videos.delete(req.params.videoId);
     res.json({ success: true });
   } catch (err) {
     console.error(err);
@@ -1458,7 +1665,7 @@ app.delete('/api/videos/:videoId', isAuthenticated, async (req, res) => {
 // Delete a comment (only owner)
 app.delete('/api/comments/:commentId', isAuthenticated, async (req, res) => {
   try {
-    const comment = await store.comments.findById(req.params.commentId);
+    const comment = await supabaseDb.comments.findById(req.params.commentId);
     if (!comment) {
       return res.status(404).json({ error: 'Comment not found' });
     }
@@ -1466,7 +1673,7 @@ app.delete('/api/comments/:commentId', isAuthenticated, async (req, res) => {
       return res.status(403).json({ error: 'Unauthorized' });
     }
 
-    await store.comments.delete(req.params.commentId);
+    await supabaseDb.comments.delete(req.params.commentId);
     res.json({ success: true });
   } catch (err) {
     console.error(err);
@@ -1477,7 +1684,7 @@ app.delete('/api/comments/:commentId', isAuthenticated, async (req, res) => {
 // Delete a video comment (only owner)
 app.delete('/api/video-comments/:videoCommentId', isAuthenticated, async (req, res) => {
   try {
-    const comment = await store.videoComments.findById(req.params.videoCommentId);
+    const comment = await supabaseDb.videoComments.findById(req.params.videoCommentId);
     if (!comment) {
       return res.status(404).json({ error: 'Comment not found' });
     }
@@ -1485,7 +1692,7 @@ app.delete('/api/video-comments/:videoCommentId', isAuthenticated, async (req, r
       return res.status(403).json({ error: 'Unauthorized' });
     }
 
-    await store.videoComments.delete(req.params.videoCommentId);
+    await supabaseDb.videoComments.delete(req.params.videoCommentId);
     res.json({ success: true });
   } catch (err) {
     console.error(err);
@@ -1520,7 +1727,6 @@ app.use((req, res, next) => {
 // Start Server
 // ====================
 (async () => {
-  await initializeDb();
   // Setup mail transporter (if SMTP env vars provided). Otherwise fall back to console.
   
   // Configure Mailjet (API client preferred). Support both MAILJET_USER/PASS and MAILJET_API_KEY/SECRET.

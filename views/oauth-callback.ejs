@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Signing you in...</title>
+    <link rel="stylesheet" href="/css/theme.css">
+</head>
+<body class="auth-body">
+    <div class="auth-card" style="text-align: center;">
+        <h2>Signing you in...</h2>
+        <p class="small muted">Please wait while we complete your authentication.</p>
+        <div style="margin-top: 20px;">
+            <div class="loader" style="display: inline-block; border: 3px solid #f3f3f3; border-top: 3px solid #3498db; border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite;"></div>
+        </div>
+    </div>
+
+    <script>
+        window.SUPABASE_URL = '<%= SUPABASE_URL %>';
+        window.SUPABASE_ANON_KEY = '<%= SUPABASE_ANON_KEY %>';
+    </script>
+    <script src="/js/console-bridge.js?v=2"></script>
+    <script src="/js/theme-toggle.js?v=2"></script>
+    <script type="module" src="/js/supabase-auth.js?v=2"></script>
+
+    <style>
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</body>
+</html>

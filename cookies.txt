@@ -1,14 +1,1 @@
-
-Good news! The error shows that Microsoft/Azure OAuth is being triggered - you can see it's trying to load from aadcdn.msftauth.net (Microsoft's authentication domain). The 404 error is because it's trying to call a /l endpoint on your Codespace URL, which means the redirect flow got confused.
-
-The issue is that Supabase's OAuth flow needs to be configured correctly in Supabase's dashboard. You need to make sure:
-
-In Supabase Dashboard → Authentication → Providers → Microsoft/Azure:
-
-Enable the provider
-Add your Redirect URL: https://rfhitxqaihbqmiakbnxa.supabase.co/auth/v1/callback
-Verify your OAuth redirect URL is set in Supabase → Authentication → URL Configuration:
-
-Site URL: https://rfhitxqaihbqmiakbnxa.supabase.co
-Redirect URLs: https://rfhitxqaihbqmiakbnxa.supabase.co/auth/v1/callback
-The OAuth flow is working now - it's just a matter of Supabase being configured correctly to handle the Microsoft callback. Check your Supabase dashboard to ensure those settings are in place.
+i want you to figure otu why it wont work when i try to login with supabas oauth it  sends the requts to supabase and it returns ture but it then reditrects back to /login but with an error url and doesnt actually make the account in supabase but it receive the account request
