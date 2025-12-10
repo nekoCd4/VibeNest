@@ -150,6 +150,10 @@ const isAuthenticated = (req, res, next) => {
   if (req.isAuthenticated()) {
     return next();
   }
+  // For API requests, return 401
+  if (req.headers.accept && req.headers.accept.includes('application/json')) {
+    return res.status(401).json({ error: 'Not authenticated' });
+  }
   res.redirect('/login');
 };
 
@@ -237,6 +241,67 @@ app.post('/api/client-log', express.json(), (req, res) => {
   
   console.log(`[CLIENT ${timeStr}] ${levelEmoji} ${level.toUpperCase()}: ${msgStr}`);
   res.json({ received: true });
+});
+
+// Serve Supabase client as a module (solves CORS issues with CDN)
+app.get('/js/supabase-client.mjs', (req, res) => {
+  res.setHeader('Content-Type', 'application/javascript');
+  res.send(`
+import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
+export { createClient };
+  `);
+});
+
+// Proxy route to serve files from Supabase Storage
+// This allows the client to request /uploads/filename and we serve it from Supabase Storage
+app.get(/^\/uploads\/(.+)$/, async (req, res) => {
+  try {
+    const filename = req.params[0];  // Captured group from regex
+    console.log('[UPLOADS] GET /uploads/' + filename);
+    
+    if (!filename) {
+      console.log('[UPLOADS] No filename provided');
+      return res.status(400).json({ error: 'Filename required' });
+    }
+
+    const bucket = process.env.SUPABASE_BUCKET;
+    console.log('[UPLOADS] Bucket:', bucket);
+    
+    if (!bucket) {
+      console.log('[UPLOADS] Bucket not configured');
+      return res.status(500).json({ error: 'Supabase bucket not configured' });
+    }
+
+    // Download the file from Supabase Storage
+    console.log('[UPLOADS] Downloading from Supabase...');
+    const { data, error } = await supabaseAdmin.storage.from(bucket).download(filename);
+    if (error) {
+      console.error('[UPLOADS] Download error:', error);
+      return res.status(404).json({ error: 'File not found: ' + error.message });
+    }
+
+    // Convert Blob to Buffer if needed
+    const buffer = Buffer.from(await data.arrayBuffer());
+    console.log('[UPLOADS] File size:', buffer.length, 'bytes');
+    
+    // Set appropriate content type based on file extension
+    const ext = filename.split('.').pop().toLowerCase();
+    const contentTypes = {
+      'jpg': 'image/jpeg', 'jpeg': 'image/jpeg', 'png': 'image/png', 'gif': 'image/gif',
+      'mp4': 'video/mp4', 'webm': 'video/webm', 'mov': 'video/quicktime'
+    };
+    const contentType = contentTypes[ext] || 'application/octet-stream';
+    console.log('[UPLOADS] Content-Type:', contentType);
+    
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Content-Length', buffer.length);
+    res.setHeader('Cache-Control', 'public, max-age=31536000'); // 1 year cache
+    res.send(buffer);
+    console.log('[UPLOADS] Successfully served:', filename);
+  } catch (err) {
+    console.error('[UPLOADS] Error:', err.message);
+    res.status(500).json({ error: 'Failed to load file: ' + err.message });
+  }
 });
 
 // Quick Supabase health check (requires SUPABASE_SERVICE_ROLE_KEY)
@@ -1461,17 +1526,21 @@ app.get('/api/user/:userId/videos', async (req, res) => {
 // Like a photo
 app.post('/api/photos/:photoId/like', isAuthenticated, async (req, res) => {
   try {
+    console.log('[LIKE] User:', req.user?.id || 'NOT AUTH', 'Photo:', req.params.photoId);
     const photo = await supabaseDb.photos.findById(req.params.photoId);
     if (!photo) {
+      console.log('[LIKE] Photo not found:', req.params.photoId);
       return res.status(404).json({ error: 'Photo not found' });
     }
 
     const existingLike = await supabaseDb.likes.findByPhotoAndUser(req.params.photoId, req.user.id);
     if (existingLike) {
+      console.log('[LIKE] Removing like');
       await supabaseDb.likes.remove(req.params.photoId, req.user.id);
       const count = await supabaseDb.likes.countByPhoto(req.params.photoId);
       res.json({ success: true, liked: false, likes: count });
     } else {
+      console.log('[LIKE] Adding like');
       await supabaseDb.likes.create({
         id: uuidv4(),
         photoId: req.params.photoId,
@@ -1481,7 +1550,7 @@ app.post('/api/photos/:photoId/like', isAuthenticated, async (req, res) => {
       res.json({ success: true, liked: true, likes: count });
     }
   } catch (err) {
-    console.error(err);
+    console.error('[LIKE] Error:', err.message, err);
     res.status(500).json({ error: err.message });
   }
 });

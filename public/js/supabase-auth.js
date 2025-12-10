@@ -27,7 +27,7 @@ console.log('[SUPABASE-AUTH] Script loaded');
     console.log('[SUPABASE-AUTH] Loading Supabase library from CDN...');
     
     // Set a timeout to prevent hanging indefinitely
-    const importPromise = import('https://unpkg.com/@supabase/supabase-js@2.25.0/dist/main.es.js');
+    const importPromise = import('https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm');
     const timeoutPromise = new Promise((_, reject) => 
       setTimeout(() => reject(new Error('CDN load timeout')), 10000)
     );

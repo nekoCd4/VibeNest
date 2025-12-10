@@ -68,46 +68,108 @@
     </div>
 
     <script>
-        document.querySelectorAll('.like-btn').forEach(btn => {
-            btn.addEventListener('click', async function() {
-                const postId = this.dataset.postId;
-                const type = this.dataset.type; // 'photo' or 'video'
-                const endpointType = type === 'video' ? 'videos' : 'photos';
-                const response = await fetch(`/api/${endpointType}/${postId}/like`, { method: 'POST' });
+        // Load and display comments for a post
+        async function loadComments(postId, type) {
+            const endpointType = type === 'video' ? 'videos' : 'photos';
+            try {
+                const response = await fetch(`/api/${endpointType}/${postId}/comments`);
                 const data = await response.json();
-                if (data.success) {
-                    this.classList.toggle('liked');
-                    this.querySelector('.like-count').textContent = data.likes + ' likes';
-                }
-            });
-        });
+                return data.comments || [];
+            } catch (err) {
+                console.error('Error loading comments:', err);
+                return [];
+            }
+        }
 
-        document.querySelectorAll('.comment-btn-open').forEach(btn => {
-            btn.addEventListener('click', function() {
-                const section = this.closest('.feed-item').querySelector('.comments-section');
+        // Render comments in the UI
+        async function renderComments(feedItem) {
+            const postId = feedItem.dataset.postId;
+            const type = feedItem.dataset.type;
+            const commentsList = feedItem.querySelector('.comments-list');
+            const comments = await loadComments(postId, type);
+            
+            commentsList.innerHTML = comments.map(c => `
+                <div class="comment-item" style="padding:8px 0;border-bottom:1px solid var(--border);font-size:0.9rem">
+                    <strong>${c.displayName || c.username}</strong>
+                    <span style="color:var(--muted)">@${c.username}</span>
+                    <p style="margin:4px 0 0 0;color:var(--text)">${c.text}</p>
+                </div>
+            `).join('');
+        }
+
+        // Initialize posts
+        document.querySelectorAll('.feed-item').forEach(feedItem => {
+            // Load comments when section opens
+            const commentBtn = feedItem.querySelector('.comment-btn-open');
+            commentBtn.addEventListener('click', async function() {
+                const section = feedItem.querySelector('.comments-section');
+                if (section.style.display === 'none') {
+                    await renderComments(feedItem);
+                }
                 section.style.display = section.style.display === 'none' ? 'block' : 'none';
             });
-        });
 
-        document.querySelectorAll('.comment-btn').forEach(btn => {
-            btn.addEventListener('click', async function() {
-                const input = this.previousElementSibling;
+            // Like button
+            const likeBtn = feedItem.querySelector('.like-btn');
+            likeBtn.addEventListener('click', async function() {
+                const postId = this.dataset.postId;
+                const type = this.dataset.type;
+                const endpointType = type === 'video' ? 'videos' : 'photos';
+                try {
+                    console.log('[FEED] Liking', postId, 'type:', type);
+                    const response = await fetch(`/api/${endpointType}/${postId}/like`, { 
+                        method: 'POST',
+                        headers: { 
+                            'Content-Type': 'application/json',
+                            'Accept': 'application/json'
+                        }
+                    });
+                    
+                    if (!response.ok) {
+                        const errorText = await response.text();
+                        console.error('[FEED] HTTP error:', response.status, errorText);
+                        alert('Error: ' + (response.status === 401 ? 'Please log in' : 'Failed to like post'));
+                        return;
+                    }
+                    
+                    const data = await response.json();
+                    console.log('[FEED] Like response:', data);
+                    if (data.success) {
+                        this.classList.toggle('liked');
+                        this.querySelector('.like-count').textContent = data.likes + ' likes';
+                    } else {
+                        console.error('[FEED] Like failed:', data.error);
+                        alert('Error: ' + (data.error || 'Like failed'));
+                    }
+                } catch (err) {
+                    console.error('Error liking post:', err);
+                    alert('Error liking post: ' + err.message);
+                }
+            });
+
+            // Comment button
+            const commentPostBtn = feedItem.querySelector('.comment-btn');
+            commentPostBtn.addEventListener('click', async function() {
+                const input = feedItem.querySelector('.comment-input');
                 const text = input.value;
                 if (!text.trim()) return;
 
-                const feedItem = this.closest('.feed-item');
                 const postId = feedItem.dataset.postId;
                 const type = feedItem.dataset.type;
                 const endpointType = type === 'video' ? 'videos' : 'photos';
-                const response = await fetch(`/api/${endpointType}/${postId}/comment`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ text })
-                });
+                try {
+                    const response = await fetch(`/api/${endpointType}/${postId}/comment`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ text })
+                    });
 
-                if (response.ok) {
-                    input.value = '';
-                    location.reload(); // Reload to show new comment
+                    if (response.ok) {
+                        input.value = '';
+                        await renderComments(feedItem);
+                    }
+                } catch (err) {
+                    console.error('Error posting comment:', err);
                 }
             });
         });

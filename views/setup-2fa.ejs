@@ -3,341 +3,257 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Setup 2FA</title>
+  <title>Setup 2FA - VibeNest</title>
+  <link rel="stylesheet" href="/css/theme.css">
   <style>
-    :root {
-      --primary-color: #4a90e2;
-      --secondary-color: #ffffff;
-      --background-color: #121212;
-      --card-background: #1e1e1e;
-      --text-color: #e0e0e0;
-      --border-color: #333333;
-      --focus-glow: 0 0 10px rgba(74, 144, 226, 0.5);
-      --error-color: #e74c3c;
-    }
-
-    body {
-      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-      background-color: var(--background-color);
-      color: var(--text-color);
-      margin: 0;
-      display: flex;
-      justify-content: center;
-      align-items: center;
-      min-height: 100vh;
-      padding: 20px;
-      box-sizing: border-box;
-    }
-
-    .container {
+    .setup-2fa-container {
       max-width: 500px;
-      width: 100%;
-      padding: 40px;
-      background-color: var(--card-background);
+      margin: 40px auto;
+      padding: 32px;
+      background: var(--card);
       border-radius: 12px;
-      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+      box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+    }
+    .setup-2fa-container h2 {
+      color: var(--accent);
+      margin-top: 0;
       text-align: center;
     }
-
-    h2 {
-      color: var(--secondary-color);
-      margin-bottom: 10px;
-      font-size: 1.8em;
-    }
-
-    p {
-      font-size: 0.9em;
-      color: #aaa;
-      line-height: 1.6;
-    }
-
     .tabs {
       display: flex;
-      margin: 20px 0;
-      border-bottom: 1px solid var(--border-color);
+      gap: 0;
+      border-bottom: 2px solid var(--border);
+      margin: 24px 0;
     }
-
     .tab-btn {
-      flex-grow: 1;
-      padding: 15px;
-      font-size: 1em;
-      font-weight: 600;
-      color: #888;
-      background: none;
+      flex: 1;
+      padding: 12px;
+      background: transparent;
       border: none;
+      color: var(--muted);
+      font-weight: 600;
       cursor: pointer;
-      transition: color 0.3s ease;
+      border-bottom: 3px solid transparent;
+      margin-bottom: -2px;
+      transition: all 0.2s;
     }
-
     .tab-btn.active {
-      color: var(--primary-color);
-      border-bottom: 2px solid var(--primary-color);
-      margin-bottom: -1px;
+      color: var(--accent);
+      border-bottom-color: var(--accent);
     }
-
     .tab-content {
       display: none;
     }
-
     .tab-content.active {
       display: block;
     }
-
     .qr-container {
-      background-color: var(--secondary-color);
-      padding: 10px;
+      background: white;
+      padding: 12px;
       border-radius: 8px;
       display: inline-block;
-      margin-bottom: 20px;
+      margin: 20px 0;
     }
-
     .qr-container img {
-      display: block;
       max-width: 100%;
       height: auto;
     }
-
     .secret-key {
-      background-color: #2a2a2a;
-      padding: 10px;
+      background: var(--focus);
+      padding: 12px;
       border-radius: 8px;
       font-family: monospace;
-      font-size: 1.1em;
-      margin-bottom: 20px;
+      font-size: 0.95rem;
+      margin: 16px 0;
       word-break: break-all;
+      user-select: all;
     }
-
-    .form-group {
-      margin-bottom: 20px;
-      text-align: left;
-    }
-
-    label {
-      display: block;
-      margin-bottom: 8px;
-      font-size: 0.9em;
-      color: var(--text-color);
-    }
-
-    input[type="text"], input[type="email"] {
-      width: 100%;
-      padding: 12px 15px;
-      background-color: transparent;
-      border: 1px solid var(--border-color);
-      border-radius: 8px;
-      color: var(--secondary-color);
-      font-size: 1em;
-      transition: border-color 0.3s ease, box-shadow 0.3s ease;
-      box-sizing: border-box;
-    }
-
-    input[type="text"]:focus, input[type="email"]:focus {
-      outline: none;
-      border-color: var(--primary-color);
-      box-shadow: var(--focus-glow);
-    }
-
-    button {
-      width: 100%;
-      padding: 15px;
-      background-color: var(--primary-color);
-      color: var(--secondary-color);
-      font-size: 1.1em;
-      font-weight: 600;
-      border: none;
-      border-radius: 8px;
-      cursor: pointer;
-      transition: background-color 0.3s ease, transform 0.2s ease, box-shadow 0.3s ease;
-    }
-
-    button:hover {
-      background-color: #3870b2;
-      transform: translateY(-2px);
-      box-shadow: 0 6px 15px rgba(0, 0, 0, 0.2);
-    }
-
     .error-message {
-      color: var(--error-color);
-      font-size: 0.9em;
-      margin: 10px 0;
+      color: var(--danger);
+      background: rgba(255,107,107,0.1);
+      padding: 12px;
+      border-radius: 8px;
+      margin: 16px 0;
+    }
+    .success-message {
+      color: var(--success);
+      background: rgba(60,207,142,0.1);
+      padding: 12px;
+      border-radius: 8px;
+      margin: 16px 0;
+    }
+    .form-group {
+      margin-bottom: 16px;
+    }
+    .form-group label {
+      display: block;
+      margin-bottom: 6px;
+      font-weight: 600;
+    }
+    .form-group input {
+      width: 100%;
+      padding: 10px 12px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--card);
+      color: var(--text);
+    }
+    .backup-codes-list {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+      gap: 8px;
+      margin: 16px 0;
+      list-style: none;
+      padding: 0;
+    }
+    .backup-codes-list li {
+      padding: 8px;
+      border: 1px dashed var(--border);
+      border-radius: 6px;
+      background: var(--focus);
+      font-family: monospace;
+      font-size: 0.85rem;
+      text-align: center;
+    }
+    .button-group {
+      display: flex;
+      gap: 8px;
+      margin-top: 12px;
+    }
+    .button-group button {
+      flex: 1;
     }
   </style>
 </head>
-  <body>
+<body>
   <%- include('partials/header') %>
-  <div class="container">
-    <h2>Setup Two-Factor Authentication</h2>
-    <p>Choose your preferred method of two-factor authentication.</p>
+  
+  <div class="setup-2fa-container">
+    <h2>Two-Factor Authentication Setup</h2>
+    <p style="color: var(--muted); text-align: center;">Secure your account with two-factor authentication</p>
 
     <% if (error) { %>
       <div class="error-message"><%= error %></div>
     <% } %>
     <% if (message) { %>
-      <div style="color: #8ae6a3; margin: 12px 0; font-weight:600"><%= message %></div>
+      <div class="success-message"><%= message %></div>
     <% } %>
 
+    <!-- Display backup codes if just enabled -->
     <% if (typeof plainCodes !== 'undefined' && plainCodes && plainCodes.length) { %>
-      <div class="card" style="padding:12px;margin:12px 0;border-radius:8px;">
-        <h3 style="margin:0 0 8px 0">Your backup / recovery codes (save them now)</h3>
-        <p class="small muted">These codes are shown only once. Store them somewhere safe — each code is single-use.</p>
-        <ul style="margin-top:8px;text-align:left">
-            <% plainCodes.forEach(code => { %>
-            <li style="font-family:monospace;margin:6px 0"><%= code %></li>
+      <div style="background: var(--focus); padding: 16px; border-radius: 8px; margin-bottom: 24px;">
+        <h3 style="margin-top: 0;">Save Your Backup Codes</h3>
+        <p style="color: var(--muted); font-size: 0.9rem;">These codes are shown only once. Store them in a safe place — each code can be used once if you lose access to your authenticator.</p>
+        <ul class="backup-codes-list">
+          <% plainCodes.forEach(code => { %>
+            <li><%= code %></li>
           <% }) %>
         </ul>
-        <div style="display:flex;gap:8px;margin-top:8px">
+        <div class="button-group">
           <button id="download-codes" class="btn ghost">Download</button>
-          <button id="copy-codes" class="btn">Copy</button>
+          <button id="copy-codes" class="btn">Copy All</button>
         </div>
       </div>
     <% } %>
 
+    <!-- Tabs -->
     <div class="tabs">
       <button class="tab-btn active" data-tab="app">Authenticator App</button>
       <button class="tab-btn" data-tab="email">Email</button>
     </div>
 
-    <!-- Authenticator App -->
+    <!-- Authenticator App Tab -->
     <div id="app-content" class="tab-content active">
-      <p>Scan the QR code below with an authenticator app (Google Authenticator, Authy, etc.):</p>
-      <div class="qr-container">
-        <% if (qrCodeImage) { %>
-          <img src="<%= qrCodeImage %>" alt="QR Code" />
-        <% } else { %>
-          <p>No QR code available. Please try again.</p>
-        <% } %>
+      <p>Use an authenticator app like Google Authenticator, Authy, or Microsoft Authenticator.</p>
+      
+      <p style="font-weight: 600; margin-top: 20px;">1. Scan the QR code:</p>
+      <div style="text-align: center;">
+        <div class="qr-container">
+          <% if (qrCodeImage) { %>
+            <img src="<%= qrCodeImage %>" alt="QR Code for 2FA setup" />
+          <% } else { %>
+            <p style="color: var(--danger);">QR code not available. Try again later.</p>
+          <% } %>
+        </div>
       </div>
-      <p>Or manually enter this secret key:</p>
+
+      <p style="font-weight: 600;">Or enter this key manually:</p>
       <div class="secret-key"><%= secret %></div>
 
+      <p style="font-weight: 600; margin-top: 20px;">2. Enter the 6-digit code:</p>
       <form action="/setup-2fa" method="POST">
         <input type="hidden" name="secret" value="<%= secret %>">
         <div class="form-group">
-          <label for="token">Authenticator Code</label>
-          <input type="text" id="token" name="token" required maxlength="6" autocomplete="off" />
+          <label for="token">Code from your authenticator</label>
+          <input type="text" id="token" name="token" placeholder="000000" maxlength="6" inputmode="numeric" required autofocus />
         </div>
-        <button type="submit">Enable 2FA</button>
+        <button type="submit" class="btn btn-primary">Enable Authenticator 2FA</button>
       </form>
-
-      <hr style="margin:20px 0;border:none;border-top:1px solid var(--border)">
-
-      <section aria-labelledby="backup-codes">
-        <h3 id="backup-codes" style="margin-bottom:8px">Backup / recovery codes</h3>
-        <p class="small muted">Generate a set of single-use recovery codes. Each code can be used once if you lose access to your authenticator app.</p>
-        <div style="margin-top:12px;display:flex;gap:8px;align-items:center">
-          <button id="genBackup" type="button" class="btn btn-outline">Generate backup codes</button>
-          <span class="small muted" id="backupNotice">Codes are shown only once — save them.</span>
-        </div>
-
-        <div id="backupBox" style="display:none;margin-top:12px">
-          <div class="card" style="padding:12px;word-break:break-all">
-            <div class="small muted">Your recovery codes (save them now — you'll only see them once):</div>
-            <ul id="backupList" style="margin-top:8px;list-style:none;padding:0;display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px"></ul>
-            <div style="margin-top:8px;text-align:right">
-              <button type="button" id="copyCodes" class="btn ghost">Copy all</button>
-            </div>
-          </div>
-        </div>
-      </section>
     </div>
 
-    <!-- Email 2FA -->
+    <!-- Email Tab -->
     <div id="email-content" class="tab-content">
-      <p>Receive a unique 6-digit code via email every time you log in.</p>
+      <p>Receive a 6-digit code via email when you log in.</p>
+      
       <form action="/enable-email-2fa" method="POST">
         <div class="form-group">
-          <label for="email">Confirm your email</label>
-          <input 
-            type="email" 
-            id="email" 
-            name="email" 
-            value="<%= user.email %>" 
-            required 
-            autocomplete="off"
-          />
+          <label for="email">Email Address</label>
+          <input type="email" id="email" name="email" value="<%= user.email %>" required readonly />
         </div>
-        <button type="submit">Enable Email 2FA</button>
+        <button type="submit" class="btn btn-primary">Enable Email 2FA</button>
       </form>
+
+      <p style="font-size: 0.85rem; color: var(--muted); margin-top: 16px;">A verification code will be sent to your email address each time you log in.</p>
     </div>
   </div>
 
   <script>
+    // Tab switching
     document.addEventListener('DOMContentLoaded', () => {
-      const tabs = document.querySelectorAll('.tab-btn');
-      const contents = document.querySelectorAll('.tab-content');
-
-      tabs.forEach(tab => {
-        tab.addEventListener('click', () => {
-          tabs.forEach(t => t.classList.remove('active'));
-          contents.forEach(c => c.classList.remove('active'));
-          tab.classList.add('active');
-          document.getElementById(tab.dataset.tab + '-content').classList.add('active');
+      document.querySelectorAll('.tab-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+          document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+          btn.classList.add('active');
+          document.getElementById(btn.dataset.tab + '-content').classList.add('active');
         });
       });
     });
-  </script>
-  <script>
-    // Generate backup codes via API and show them (client-side)
-    (function(){
-      const genBtn = document.getElementById('genBackup');
-      const box = document.getElementById('backupBox');
-      const list = document.getElementById('backupList');
-      const copyAll = document.getElementById('copyCodes');
-      if (!genBtn) return;
 
-      genBtn.addEventListener('click', async () => {
-        genBtn.disabled = true;
-        genBtn.textContent = 'Generating…';
-        try {
-          const resp = await fetch('/api/2fa/backup-codes/regenerate', { method: 'POST', headers: { 'Content-Type':'application/json' } });
-          const data = await resp.json();
-          if (!data.success) throw new Error(data.error || 'Failed');
-          const codes = data.codes || [];
-          // populate list
-          list.innerHTML = '';
-          codes.forEach(c => {
-            const li = document.createElement('li');
-            li.textContent = c;
-            li.style.fontFamily = 'monospace';
-            li.style.padding = '6px';
-            li.style.border = '1px dashed var(--border)';
-            li.style.borderRadius = '6px';
-            li.style.background = 'linear-gradient(180deg, rgba(0,0,0,0.02), transparent)';
-            list.appendChild(li);
-          });
-          box.style.display = 'block';
-          copyAll.addEventListener('click', async () => {
-            try { await navigator.clipboard.writeText(codes.join('\n')); copyAll.textContent = 'Copied'; setTimeout(()=>copyAll.textContent='Copy all', 2000); }
-            catch(e){ alert('Copy failed — copy manually shown codes'); }
-          });
-        } catch (e) {
-          alert('Failed to generate codes: ' + (e.message || e));
-        } finally {
-          genBtn.disabled = false;
-          genBtn.textContent = 'Generate backup codes';
-        }
-      });
-    })();
-  </script>
-  <script>
-    // Download / copy helpers for one-time codes display
-    (function(){
+    // Download / copy backup codes
+    (() => {
+      const codes = <%- JSON.stringify(typeof plainCodes !== 'undefined' ? plainCodes : []) %>;
       const download = document.getElementById('download-codes');
       const copyBtn = document.getElementById('copy-codes');
-      if (!download && !copyBtn) return;
-      const codes = <%- JSON.stringify(typeof plainCodes !== 'undefined' ? plainCodes : []) %>;
-      if (download) download.addEventListener('click', () => {
-        const blob = new Blob([codes.join('\n')], { type: 'text/plain' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url; a.download = 'vibenest-backup-codes.txt';
-        document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
-      });
-      if (copyBtn) copyBtn.addEventListener('click', async () => {
-        try { await navigator.clipboard.writeText(codes.join('\n')); copyBtn.textContent = 'Copied'; setTimeout(()=>copyBtn.textContent='Copy',2000); }
-        catch(e){ alert('Copy failed — please copy manually'); }
-      });
+
+      if (download && codes.length) {
+        download.addEventListener('click', () => {
+          const blob = new Blob([codes.join('\n')], { type: 'text/plain' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = 'vibenest-backup-codes.txt';
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          URL.revokeObjectURL(url);
+        });
+      }
+
+      if (copyBtn && codes.length) {
+        copyBtn.addEventListener('click', async () => {
+          try {
+            await navigator.clipboard.writeText(codes.join('\n'));
+            copyBtn.textContent = '✓ Copied';
+            setTimeout(() => (copyBtn.textContent = 'Copy All'), 2000);
+          } catch (e) {
+            alert('Could not copy. Please copy manually.');
+          }
+        });
+      }
     })();
   </script>
+  <script src="/js/theme-toggle.js"></script>
 </body>
 </html>
+

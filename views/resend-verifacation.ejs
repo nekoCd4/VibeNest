@@ -2,23 +2,47 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Resend Verification</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Resend Verification - VibeNest</title>
   <link rel="stylesheet" href="/css/theme.css">
+  <style>
+    .auth-card { max-width: 400px; margin: 40px auto; padding: 32px; background: var(--card); border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
+    .auth-card h2 { margin-top: 0; color: var(--accent); text-align: center; }
+    .form-group { margin-bottom: 16px; }
+    .auth-card label { display: block; margin-bottom: 6px; font-weight: 600; }
+    .auth-card input { width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--card); color: var(--text); }
+    .auth-card button { width: 100%; padding: 12px; margin-top: 8px; background: var(--accent); color: white; border: none; border-radius: 8px; font-weight: 600; cursor: pointer; }
+    .error-message { color: var(--danger); background: rgba(255,107,107,0.1); padding: 12px; border-radius: 8px; margin-bottom: 16px; }
+    .help-text { text-align: center; font-size: 0.9rem; color: var(--muted); margin-top: 16px; }
+    .help-text a { color: var(--accent); text-decoration: none; }
+  </style>
 </head>
 <body>
   <%- include('partials/header') %>
+  
   <div class="auth-card">
-    <div class="header"><h1>Resend Verification Email</h1></div>
-    <% if (typeof error !== "undefined") { %>
-      <p style="color: red;"><%= error %></p>
+    <h2>Resend Verification Email</h2>
+    
+    <% if (typeof error !== "undefined" && error) { %>
+      <div class="error-message"><%= error %></div>
     <% } %>
+    
     <form action="/resend-verification" method="POST">
-      <label for="email">Email</label>
-      <input type="email" id="email" name="email" required>
-      <div style="margin-top:12px;text-align:center">
-        <button type="submit" class="btn btn-primary">Resend Email</button>
+      <div class="form-group">
+        <label for="email">Email Address</label>
+        <input type="email" id="email" name="email" placeholder="your@email.com" required autofocus>
       </div>
+      
+      <button type="submit" class="btn btn-primary">Send Verification Email</button>
     </form>
+    
+    <div class="help-text">
+      We'll send a verification link to your email address. Check your spam folder if you don't see it.
+      <br><br>
+      <a href="/login">Back to login</a>
+    </div>
   </div>
+
+  <script src="/js/theme-toggle.js"></script>
 </body>
 </html>
