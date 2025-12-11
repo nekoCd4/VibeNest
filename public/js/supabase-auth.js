@@ -24,20 +24,15 @@ console.log('[SUPABASE-AUTH] Script loaded');
     }
     
     console.log('[SUPABASE-AUTH] Credentials are available, initializing...');
-    console.log('[SUPABASE-AUTH] Loading Supabase library from CDN...');
-    
-    // Set a timeout to prevent hanging indefinitely
-    const importPromise = import('https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm');
-    const timeoutPromise = new Promise((_, reject) => 
-      setTimeout(() => reject(new Error('CDN load timeout')), 10000)
-    );
-    
-    let module;
+    console.log('[SUPABASE-AUTH] Loading Supabase library from local module...');
+    // Prefer loading the client module from our local proxy to avoid CDN/network issues
+    let module = null;
     try {
-      module = await Promise.race([importPromise, timeoutPromise]);
+      module = await import('/js/supabase-client.mjs');
     } catch (loadErr) {
-      console.error('[SUPABASE-AUTH] Failed to load Supabase from CDN:', loadErr && loadErr.message);
-      // Continue anyway - we might still be able to extract tokens manually
+      console.error('[SUPABASE-AUTH] Failed to load local supabase module:', loadErr && loadErr.message);
+      // Cannot proceed if module doesn't load and Supabase lib isn't global
+      console.error('[SUPABASE-AUTH] Supabase will not be available');
       module = null;
     }
     
@@ -48,15 +43,37 @@ console.log('[SUPABASE-AUTH] Script loaded');
       try {
         ({ createClient } = module);
         console.log('[SUPABASE-AUTH] Supabase library loaded, creating client...');
-        supabase = createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY, {
-          auth: {
-            storage: window.localStorage,
-            autoRefreshToken: true,
-            persistSession: true,
-            detectSessionInUrl: true
+        
+        // Validate credentials are properly set
+        if (!window.SUPABASE_URL || typeof window.SUPABASE_URL !== 'string' || !window.SUPABASE_URL.includes('supabase')) {
+          console.error('[SUPABASE-AUTH] Invalid SUPABASE_URL:', typeof window.SUPABASE_URL);
+          supabase = null;
+        } else if (!window.SUPABASE_ANON_KEY || typeof window.SUPABASE_ANON_KEY !== 'string' || window.SUPABASE_ANON_KEY.length < 20) {
+          console.error('[SUPABASE-AUTH] Invalid SUPABASE_ANON_KEY (length:', (window.SUPABASE_ANON_KEY || '').length, ')');
+          supabase = null;
+        } else {
+          // Log sanitized credential info for debugging
+          const keyPreview = window.SUPABASE_ANON_KEY.substring(0, 10) + '...' + window.SUPABASE_ANON_KEY.substring(window.SUPABASE_ANON_KEY.length - 5);
+          console.log('[SUPABASE-AUTH] URL:', window.SUPABASE_URL.substring(0, 30) + '...');
+          console.log('[SUPABASE-AUTH] Key (preview):', keyPreview, '(length:', window.SUPABASE_ANON_KEY.length + ')');
+          
+          // Create the Supabase client
+          // The createClient function should be synchronous now since it's using window.supabase
+          try {
+            supabase = createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY, {
+              auth: {
+                storage: window.localStorage,
+                autoRefreshToken: true,
+                persistSession: true,
+                detectSessionInUrl: true
+              }
+            });
+            console.log('[SUPABASE-AUTH] Client created successfully with credentials');
+          } catch (callErr) {
+            console.error('[SUPABASE-AUTH] Failed to call createClient:', callErr && callErr.message);
+            supabase = null;
           }
-        });
-        console.log('[SUPABASE-AUTH] Client created successfully');
+        }
       } catch (createErr) {
         console.error('[SUPABASE-AUTH] Failed to create Supabase client:', createErr && createErr.message);
         supabase = null;
@@ -67,7 +84,7 @@ console.log('[SUPABASE-AUTH] Script loaded');
     // This extracts tokens from #access_token=..., #id_token=... etc and creates a session
     const handleVisibleUrl = async () => {
       console.log('[SUPABASE-AUTH] 🔗 Handling visible URL for tokens...');
-      if (supabase.auth && typeof supabase.auth.getSessionFromUrl === 'function') {
+      if (supabase && supabase.auth && typeof supabase.auth.getSessionFromUrl === 'function') {
         try {
           const { data, error } = await supabase.auth.getSessionFromUrl();
           console.log('[SUPABASE-AUTH] getSessionFromUrl:', { hasData: !!data, hasSession: !!(data?.session), error });
@@ -109,8 +126,18 @@ console.log('[SUPABASE-AUTH] Script loaded');
           body: JSON.stringify(body)
         });
         console.log('[SUPABASE-AUTH] /auth/supabase/session response status:', resp.status);
+        let json = null;
+        try { json = await resp.clone().json(); } catch (e) { json = null; }
+
+        // If server indicates the OAuth account requires profile setup, redirect there
+        if (json && json.needs_setup) {
+          console.log('[SUPABASE-AUTH] Server requires OAuth setup, redirecting to:', json.redirect || '/oauth/setup');
+          window.location = json.redirect || '/oauth/setup';
+          return resp;
+        }
+
         if (!resp.ok) {
-          const errBody = await resp.json().catch(() => ({}));
+          const errBody = json || await resp.text().catch(() => ({}));
           console.error('[SUPABASE-AUTH] Server error:', errBody);
         }
         return resp;
@@ -203,7 +230,7 @@ console.log('[SUPABASE-AUTH] Script loaded');
       
       // If no tokens found in hash, try getSessionFromUrl (in case Supabase library handles it)
       // Some supabase versions expose getSessionFromUrl to retrieve redirect tokens after OAuth
-      if (supabase.auth && typeof supabase.auth.getSessionFromUrl === 'function') {
+      if (supabase && supabase.auth && typeof supabase.auth.getSessionFromUrl === 'function') {
         try {
           console.log('[SUPABASE-AUTH] 🔑 Calling getSessionFromUrl()...');
           const { data: redirectData, error: redirectErr } = await supabase.auth.getSessionFromUrl();
@@ -272,7 +299,7 @@ console.log('[SUPABASE-AUTH] Script loaded');
     }
 
     // Listen for auth state changes (useful for popup or client sign-in flows)
-    if (supabase.auth && typeof supabase.auth.onAuthStateChange === 'function') {
+    if (supabase && supabase.auth && typeof supabase.auth.onAuthStateChange === 'function') {
       supabase.auth.onAuthStateChange(async (event, sessionData) => {
         try {
           const session = sessionData && sessionData.session ? sessionData.session : null;
@@ -295,6 +322,10 @@ console.log('[SUPABASE-AUTH] Script loaded');
     if (registerForm) {
       registerForm.addEventListener('submit', async (e) => {
         e.preventDefault();
+        if (!supabase || !supabase.auth) {
+          alert('Signup is temporarily unavailable in this environment. Please use OAuth sign-in or try again later.');
+          return;
+        }
         const fd = new FormData(registerForm);
         const email = fd.get('email');
         const password = fd.get('password');
@@ -304,7 +335,13 @@ console.log('[SUPABASE-AUTH] Script loaded');
         // create account via Supabase client (this will trigger email confirmation if configured)
         try {
           console.log('[SUPABASE-AUTH] Starting signup...');
-          const { data, error } = await supabase.auth.signUp({ email, password }, { data: { username, displayName } });
+          const { data, error } = await supabase.auth.signUp({ 
+            email, 
+            password,
+            options: {
+              data: { username, displayName }
+            }
+          });
           if (error) throw error;
           if (data && data.user) {
             console.log('[SUPABASE-AUTH] Signup successful, creating profile...');
@@ -350,8 +387,16 @@ console.log('[SUPABASE-AUTH] Script loaded');
           }
         } catch (err) {
           console.error('[SUPABASE-AUTH] Signup error:', err);
-
-          alert(err.message || 'Registration failed');
+          
+          // Provide better error messages
+          let errorMsg = err.message || 'Registration failed';
+          if (err.message && err.message.includes('Invalid API key')) {
+            errorMsg = 'Password signup is currently unavailable. Please use OAuth sign-in.';
+          } else if (err.message && err.message.includes('auth/')) {
+            // Firebase-style error codes
+            errorMsg = 'Registration failed: ' + err.message.split('/')[1];
+          }
+          alert(errorMsg);
         }
       });
     }
@@ -361,6 +406,10 @@ console.log('[SUPABASE-AUTH] Script loaded');
     if (loginForm) {
       loginForm.addEventListener('submit', async (e) => {
         e.preventDefault();
+        if (!supabase || !supabase.auth) {
+          alert('Login is temporarily unavailable in this environment. Please use OAuth sign-in or try again later.');
+          return;
+        }
         const fd = new FormData(loginForm);
         const usernameOrEmail = fd.get('username');
         const password = fd.get('password');

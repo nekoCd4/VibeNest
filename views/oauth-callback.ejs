@@ -16,11 +16,13 @@
     </div>
 
     <script>
-        window.SUPABASE_URL = '<%= SUPABASE_URL %>';
-        window.SUPABASE_ANON_KEY = '<%= SUPABASE_ANON_KEY %>';
+        window.SUPABASE_URL = <%= JSON.stringify(SUPABASE_URL) %>;
+        window.SUPABASE_ANON_KEY = <%= JSON.stringify(SUPABASE_ANON_KEY) %>;
     </script>
     <script src="/js/console-bridge.js?v=2"></script>
     <script src="/js/theme-toggle.js?v=2"></script>
+    <!-- Load Supabase library globally before the auth module -->
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script type="module" src="/js/supabase-auth.js?v=2"></script>
 
     <style>

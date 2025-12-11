@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Complete your profile</title>
+  <link rel="stylesheet" href="/css/theme.css">
+</head>
+<body class="auth-body">
+  <div class="auth-card">
+    <h2>Finish setting up your account</h2>
+    <% if (error) { %>
+      <p class="muted" style="color: #b00020;"><%= error %></p>
+    <% } else { %>
+      <p class="small muted">Choose a display name and an @name for your profile.</p>
+    <% } %>
+
+    <form method="POST" action="/oauth/setup" style="margin-top: 16px;">
+      <label>Display name</label>
+      <input name="displayName" type="text" value="<%= suggestedDisplayName %>" placeholder="Your display name" required />
+
+      <label>@name (username)</label>
+      <div style="display:flex; gap:8px; align-items:center;">
+        <span style="opacity:0.6">@</span>
+        <input name="username" type="text" value="<%= suggestedUsername %>" placeholder="username" required />
+      </div>
+
+      <div style="margin-top:12px; display:flex; gap:8px;">
+        <button type="submit" class="btn">Create account</button>
+        <a class="btn muted" href="/login">Cancel</a>
+      </div>
+    </form>
+  </div>
+
+  <script src="/js/console-bridge.js?v=2"></script>
+  <script src="/js/theme-toggle.js?v=2"></script>
+</body>
+</html>

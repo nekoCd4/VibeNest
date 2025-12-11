@@ -243,13 +243,25 @@ app.post('/api/client-log', express.json(), (req, res) => {
   res.json({ received: true });
 });
 
-// Serve Supabase client as a module (solves CORS issues with CDN)
+// Serve Supabase client as a module
+// This expects window.supabase to be loaded globally via a script tag in the views
+// and provides a simple re-export for module imports
 app.get('/js/supabase-client.mjs', (req, res) => {
   res.setHeader('Content-Type', 'application/javascript');
-  res.send(`
-import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
-export { createClient };
-  `);
+  
+  // Export the createClient function from the global window.supabase object
+  const code = `
+// Supabase Client Module - Browser ES Module
+// Re-exports from window.supabase which is loaded globally
+
+export const createClient = (supabaseUrl, supabaseKey, options) => {
+  if (typeof window === 'undefined' || !window.supabase || !window.supabase.createClient) {
+    throw new Error('[SUPABASE-MODULE] Supabase library not loaded. Make sure the script tag is loaded before this module.');
+  }
+  return window.supabase.createClient(supabaseUrl, supabaseKey, options);
+};
+`;
+    res.send(code);
 });
 
 // Proxy route to serve files from Supabase Storage
@@ -395,6 +407,33 @@ app.post('/auth/supabase/session', async (req, res) => {
     console.log('[AUTH] 🔍 Looking up user in local database...');
     let localUser = await supabaseDb.users.findById(targetId);
     console.log('[AUTH] Local user lookup:', localUser ? `✓ Found (${localUser.username})` : '✗ Not found');
+
+    // If user does not exist and an access_token was provided (OAuth flow), pause and ask user to pick username/display name
+    if (!localUser && req.body && req.body.access_token) {
+      try {
+        console.log('[AUTH] 🔔 OAuth user not mapped locally — deferring to profile setup page');
+        let existingProfile = null;
+        if (supabaseAdmin && targetId) {
+          try {
+            const { data: pData, error: pErr } = await supabaseAdmin.from('profiles').select('*').eq('id', targetId).limit(1).single();
+            if (!pErr && pData) existingProfile = pData;
+          } catch (e) {
+            console.log('[AUTH] ⚠️  Could not fetch existing profile for setup:', e?.message);
+          }
+        }
+
+        // Store pending OAuth details in session so the setup form can complete creation server-side
+        req.session.pendingOAuth = {
+          access_token: req.body.access_token,
+          userId: targetId,
+          profile: existingProfile
+        };
+        await new Promise((r) => req.session.save(r));
+        return res.json({ needs_setup: true, redirect: '/oauth/setup' });
+      } catch (e) {
+        console.error('[AUTH] Error preparing OAuth setup:', e && e.message);
+      }
+    }
 
     // If not found locally, fetch from Supabase and create mapping
     if (!localUser && supabaseAdmin) {
@@ -730,6 +769,108 @@ app.get('/auth/callback', (req, res) => {
   // Browser will handle this client-side via supabase-auth.js
   // Just render a page that will process the fragments
   res.render('oauth-callback', { SUPABASE_URL: process.env.SUPABASE_URL, SUPABASE_ANON_KEY: process.env.SUPABASE_ANON_KEY });
+});
+
+
+// OAuth setup page - lets user choose a username and display name before completing account creation
+app.get('/oauth/setup', (req, res) => {
+  try {
+    const pending = req.session && req.session.pendingOAuth;
+    if (!pending) return res.redirect('/login?message=' + encodeURIComponent('No pending OAuth signup found'));
+
+    const pre = pending.profile || {};
+    res.render('oauth-setup', {
+      suggestedUsername: pre.username || '',
+      suggestedDisplayName: pre.display_name || '',
+      error: null
+    });
+  } catch (e) {
+    console.error('Error rendering oauth setup page:', e && e.message);
+    res.redirect('/login?message=Error');
+  }
+});
+
+// Handle OAuth setup submission
+app.post('/oauth/setup', async (req, res) => {
+  try {
+    const pending = req.session && req.session.pendingOAuth;
+    if (!pending) return res.redirect('/login?message=' + encodeURIComponent('No pending OAuth signup found'));
+
+    const { username, displayName } = req.body || {};
+    if (!username || !/^[a-zA-Z0-9_\-]{3,30}$/.test(username)) {
+      return res.render('oauth-setup', { suggestedUsername: username || '', suggestedDisplayName: displayName || '', error: 'Invalid username. Use 3-30 letters, numbers, hyphen or underscore.' });
+    }
+
+    // Ensure username unique (check profiles table first, then local mapping)
+    if (supabaseAdmin) {
+      const { data: existing, error: e } = await supabaseAdmin.from('profiles').select('id').eq('username', username).limit(1).single();
+      if (existing && existing.id) {
+        return res.render('oauth-setup', { suggestedUsername: username, suggestedDisplayName: displayName || '', error: 'Username already taken' });
+      }
+    }
+
+    const existingLocal = await supabaseDb.users.findByUsername(username).catch(() => null);
+    if (existingLocal && existingLocal.id) {
+      return res.render('oauth-setup', { suggestedUsername: username, suggestedDisplayName: displayName || '', error: 'Username already taken' });
+    }
+
+    const userId = pending.userId;
+
+    // Create profile in Supabase (service role)
+    if (supabaseAdmin) {
+      try {
+        const insertObj = {
+          id: userId,
+          username: username,
+          display_name: displayName || username,
+          created_at: new Date().toISOString()
+        };
+        const { error: insertErr } = await supabaseAdmin.from('profiles').insert(insertObj);
+        if (insertErr) {
+          console.log('[OAUTH-SETUP] Supabase profile insert error:', insertErr.message || insertErr);
+        } else {
+          console.log('[OAUTH-SETUP] Supabase profile created for', username);
+        }
+      } catch (e) {
+        console.warn('[OAUTH-SETUP] Error creating Supabase profile:', e && e.message);
+      }
+    }
+
+    // Create local mapping
+    const localUser = {
+      id: userId,
+      uid: userId,
+      username: username,
+      email: (pending.profile && pending.profile.email) || `${username}@oauth.local`,
+      displayName: displayName || username,
+      authProvider: 'supabase',
+      verified: 1
+    };
+
+    try {
+      await supabaseDb.users.create(localUser);
+      console.log('[OAUTH-SETUP] Local mapping created for', username);
+    } catch (e) {
+      console.warn('[OAUTH-SETUP] Local mapping creation failed:', e && e.message);
+    }
+
+    // Complete login
+    req.logIn(localUser, (err) => {
+      if (err) {
+        console.error('[OAUTH-SETUP] Failed to create session after setup:', err && err.message);
+        return res.redirect('/login?message=' + encodeURIComponent('Failed to create session'));
+      }
+      // Clean pending data
+      delete req.session.pendingOAuth;
+      req.session.save(() => {
+        return res.redirect('/');
+      });
+    });
+
+  } catch (err) {
+    console.error('[OAUTH-SETUP] Error handling setup submission:', err && err.message);
+    res.render('oauth-setup', { suggestedUsername: req.body.username || '', suggestedDisplayName: req.body.displayName || '', error: 'Internal error' });
+  }
 });
 
 // In-memory authorization code store (dev-only, short-lived)
