@@ -663,17 +663,44 @@ app.post('/reset', async (req, res) => {
     const base = process.env.BASE_URL || process.env.APP_URL || `http://localhost:${process.env.PORT || 3000}`;
     const resetUrl = `${base}/reset/${token}`;
 
-    const mailOpts = {
-      to: user.email,
-      subject: 'VibeNest password reset',
-      text: `You requested a password reset. Visit: ${resetUrl}`,
-      html: `<p>Hi ${user.displayName || user.username},</p>
-             <p>You requested a password reset. Click the link below to set a new password (valid for 1 hour):</p>
-             <p><a href="${resetUrl}">${resetUrl}</a></p>
-             <p>If you didn't request this, ignore this email.</p>`
-    };
+    // Send using Supabase email template
+    try {
+      await supabaseAdmin.auth.admin.sendRawEmail({
+        email: user.email,
+        template: 'reset',
+        data: {
+          displayName: user.displayName || user.username,
+          resetUrl: resetUrl
+        }
+      }).catch(async (err) => {
+        // Fallback to sendMail if template fails
+        console.warn('Supabase template send failed, using fallback:', err?.message);
+        const mailOpts = {
+          to: user.email,
+          subject: 'VibeNest password reset',
+          text: `You requested a password reset. Visit: ${resetUrl}`,
+          html: `<p>Hi ${user.displayName || user.username},</p>
+                 <p>You requested a password reset. Click the link below to set a new password (valid for 1 hour):</p>
+                 <p><a href="${resetUrl}">${resetUrl}</a></p>
+                 <p>If you didn't request this, ignore this email.</p>`
+        };
+        return sendMail(mailOpts);
+      });
+    } catch (templateErr) {
+      console.error('Password reset email error:', templateErr?.message);
+      // Fallback to sendMail
+      const mailOpts = {
+        to: user.email,
+        subject: 'VibeNest password reset',
+        text: `You requested a password reset. Visit: ${resetUrl}`,
+        html: `<p>Hi ${user.displayName || user.username},</p>
+               <p>You requested a password reset. Click the link below to set a new password (valid for 1 hour):</p>
+               <p><a href="${resetUrl}">${resetUrl}</a></p>
+               <p>If you didn't request this, ignore this email.</p>`
+      };
+      await sendMail(mailOpts);
+    }
 
-    await sendMail(mailOpts);
     res.render('reset_sent');
   } catch (err) {
     console.error(err);
@@ -973,17 +1000,44 @@ app.post('/forgot-password', async (req, res) => {
     const base = process.env.BASE_URL || process.env.APP_URL || `http://localhost:${process.env.PORT || 3000}`;
     const resetUrl = `${base}/reset/${token}`;
 
-    const mailOpts = {
-      to: user.email,
-      subject: 'VibeNest password reset',
-      text: `You requested a password reset. Visit: ${resetUrl}`,
-      html: `<p>Hi ${user.displayName || user.username},</p>
-             <p>You requested a password reset. Click the link below to set a new password (valid for 1 hour):</p>
-             <p><a href="${resetUrl}">${resetUrl}</a></p>
-             <p>If you didn't request this, ignore this email.</p>`
-    };
+    // Send using Supabase email template
+    try {
+      await supabaseAdmin.auth.admin.sendRawEmail({
+        email: user.email,
+        template: 'reset',
+        data: {
+          displayName: user.displayName || user.username,
+          resetUrl: resetUrl
+        }
+      }).catch(async (err) => {
+        // Fallback to sendMail if template fails
+        console.warn('Supabase template send failed, using fallback:', err?.message);
+        const mailOpts = {
+          to: user.email,
+          subject: 'VibeNest password reset',
+          text: `You requested a password reset. Visit: ${resetUrl}`,
+          html: `<p>Hi ${user.displayName || user.username},</p>
+                 <p>You requested a password reset. Click the link below to set a new password (valid for 1 hour):</p>
+                 <p><a href="${resetUrl}">${resetUrl}</a></p>
+                 <p>If you didn't request this, ignore this email.</p>`
+        };
+        return sendMail(mailOpts);
+      });
+    } catch (templateErr) {
+      console.error('Password reset email error:', templateErr?.message);
+      // Fallback to sendMail
+      const mailOpts = {
+        to: user.email,
+        subject: 'VibeNest password reset',
+        text: `You requested a password reset. Visit: ${resetUrl}`,
+        html: `<p>Hi ${user.displayName || user.username},</p>
+               <p>You requested a password reset. Click the link below to set a new password (valid for 1 hour):</p>
+               <p><a href="${resetUrl}">${resetUrl}</a></p>
+               <p>If you didn't request this, ignore this email.</p>`
+      };
+      await sendMail(mailOpts);
+    }
 
-    await sendMail(mailOpts);
     res.render('reset_sent');
   } catch (err) {
     console.error(err);
@@ -1105,16 +1159,30 @@ app.post('/2fa-login', async (req, res) => {
   }
 });
 
-// Verify email 2FA code
+// Verify email 2FA code (includes magic link verification)
 app.post('/2fa-verify-email', async (req, res) => {
   try {
     const { emailToken } = req.body;
     const twoFactor = req.session.twoFactor;
     if (!twoFactor) return res.render('2fa-login', { error: 'No login in progress', twoFactorMethod: 'email' });
+    
+    // Handle magic link token (from /verify-magic-link/:token)
+    if (twoFactor.method === 'magic_link') {
+      // Token already verified in /verify-magic-link/:token route, just log in
+      const user = await supabaseDb.users.findById(twoFactor.userId);
+      if (!user) return res.render('2fa-login', { error: 'User not found', twoFactorMethod: 'magic_link' });
+      await new Promise((resolve, reject) => {
+        req.logIn(user, (err) => (err ? reject(err) : resolve()));
+      });
+      delete req.session.twoFactor;
+      return res.redirect('/');
+    }
+    
+    // Handle email OTP code
     if (twoFactor.method !== 'email') return res.render('2fa-login', { error: 'Email 2FA not active', twoFactorMethod: twoFactor.method });
     if (Date.now() > twoFactor.expiresAt) return res.render('2fa-login', { error: 'Code expired', twoFactorMethod: 'email' });
     if (String(emailToken).trim() !== String(twoFactor.code)) return res.render('2fa-login', { error: 'Invalid code', twoFactorMethod: 'email' });
-    // Valid — log in the user
+    
     const user = await supabaseDb.users.findById(twoFactor.userId);
     if (!user) return res.render('2fa-login', { error: 'User not found', twoFactorMethod: 'email' });
     await new Promise((resolve, reject) => {
@@ -1128,7 +1196,89 @@ app.post('/2fa-verify-email', async (req, res) => {
   }
 });
 
-// 2FA resend endpoint
+// Send magic link for 2FA (only for users with magic link 2FA enabled)
+app.post('/api/2fa/send-magic-link', async (req, res) => {
+  try {
+    const { userId } = req.body;
+    if (!userId) return res.status(400).json({ error: 'User ID required' });
+
+    const user = await supabaseDb.users.findById(userId);
+    if (!user || user.is2FAEnabled !== 'magic_link' || !user.magicLinkEmail) {
+      return res.status(400).json({ error: 'Magic link 2FA not enabled for this user' });
+    }
+
+    const token = crypto.randomBytes(32).toString('hex');
+    const expiresAt = new Date(Date.now() + 1000 * 60 * 15).toISOString(); // 15 minutes
+    await supabaseDb.magicLinks.create(token, userId, expiresAt);
+
+    const base = process.env.BASE_URL || process.env.APP_URL || `http://localhost:${process.env.PORT || 3000}`;
+    const magicUrl = `${base}/verify-magic-link/${token}`;
+
+    // Send using Supabase email template
+    try {
+      await supabaseAdmin.auth.admin.sendRawEmail({
+        email: user.magicLinkEmail,
+        template: 'magic_link',
+        data: {
+          displayName: user.displayName || user.username,
+          magicUrl: magicUrl
+        }
+      }).catch(async (err) => {
+        // Fallback to sendMail if template fails
+        console.warn('Supabase template send failed, using fallback:', err?.message);
+        return sendMail({
+          to: user.magicLinkEmail,
+          subject: 'Your VibeNest login link',
+          text: `Click to verify: ${magicUrl}`,
+          html: `<p>Hi ${user.displayName || user.username},</p><p>Click <a href="${magicUrl}">here</a> to verify and log in.</p>`
+        });
+      });
+    } catch (templateErr) {
+      console.error('Magic link email error:', templateErr?.message);
+      // Fallback to sendMail
+      await sendMail({
+        to: user.magicLinkEmail,
+        subject: 'Your VibeNest login link',
+        text: `Click to verify: ${magicUrl}`,
+        html: `<p>Hi ${user.displayName || user.username},</p><p>Click <a href="${magicUrl}">here</a> to verify and log in.</p>`
+      });
+    }
+
+    res.json({ success: true, message: 'Magic link sent to ' + user.magicLinkEmail });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to send magic link' });
+  }
+});
+
+// Verify magic link token
+app.get('/verify-magic-link/:token', async (req, res) => {
+  try {
+    const token = req.params.token;
+    const record = await supabaseDb.magicLinks.findByToken(token);
+    if (!record) return res.render('verify', { success: false, message: 'Invalid or expired magic link.' });
+    if (new Date(record.expiresAt) < new Date()) {
+      await supabaseDb.magicLinks.deleteByToken(token);
+      return res.render('verify', { success: false, message: 'Magic link expired.' });
+    }
+
+    const user = await supabaseDb.users.findById(record.userId);
+    if (!user) return res.render('verify', { success: false, message: 'User not found.' });
+
+    // Mark token as used
+    await supabaseDb.magicLinks.deleteByToken(token);
+
+    // Log user in
+    await new Promise((resolve, reject) => {
+      req.logIn(user, (err) => (err ? reject(err) : resolve()));
+    });
+
+    res.render('verify', { success: true, message: 'You have been logged in successfully.' });
+  } catch (err) {
+    console.error(err);
+    res.render('verify', { success: false, message: 'Error processing magic link.' });
+  }
+});
 app.post('/2fa-resend', async (req, res) => {
   try {
     const twoFactor = req.session.twoFactor;
@@ -1140,12 +1290,37 @@ app.post('/2fa-resend', async (req, res) => {
     twoFactor.code = code;
     twoFactor.expiresAt = Date.now() + 1000 * 60 * 10;
     req.session.twoFactor = twoFactor;
-    await sendMail({
-      to: user.email,
-      subject: 'Your VibeNest login code (resend)',
-      text: `Your login code: ${code}`,
-      html: `<p>Your login code: <strong>${code}</strong></p>`
-    });
+    
+    // Send using Supabase email template
+    try {
+      await supabaseAdmin.auth.admin.sendRawEmail({
+        email: user.email,
+        template: '2fa',
+        data: {
+          displayName: user.displayName || user.username,
+          code: code
+        }
+      }).catch(async (err) => {
+        // Fallback to sendMail if template fails
+        console.warn('Supabase template send failed, using fallback:', err?.message);
+        return sendMail({
+          to: user.email,
+          subject: 'Your VibeNest login code (resend)',
+          text: `Your login code: ${code}`,
+          html: `<p>Your login code: <strong>${code}</strong></p>`
+        });
+      });
+    } catch (templateErr) {
+      console.error('2FA email error:', templateErr?.message);
+      // Fallback to sendMail
+      await sendMail({
+        to: user.email,
+        subject: 'Your VibeNest login code (resend)',
+        text: `Your login code: ${code}`,
+        html: `<p>Your login code: <strong>${code}</strong></p>`
+      });
+    }
+    
     res.json({ success: true });
   } catch (err) {
     console.error(err);
@@ -1336,12 +1511,36 @@ app.post('/resend-verification', async (req, res) => {
       await supabaseDb.verifications.create(token, user.id, expiresAt);
       const base = app.locals.BASE_URL;
       const verifyUrl = `${base}/verify/${token}`;
-      await sendMail({
-        to: user.email,
-        subject: 'Verify your VibeNest account',
-        text: `Verify your VibeNest account: ${verifyUrl}`,
-        html: `<p>Hi ${user.displayName || user.username},</p><p>Click <a href="${verifyUrl}">here</a> to verify your account.</p>`
-      });
+      
+      // Send using Supabase email template
+      try {
+        await supabaseAdmin.auth.admin.sendRawEmail({
+          email: user.email,
+          template: 'verify',
+          data: {
+            displayName: user.displayName || user.username,
+            verifyUrl: verifyUrl
+          }
+        }).catch(async (err) => {
+          // Fallback to sendMail if template fails
+          console.warn('Supabase template send failed, using fallback:', err?.message);
+          return sendMail({
+            to: user.email,
+            subject: 'Verify your VibeNest account',
+            text: `Verify your VibeNest account: ${verifyUrl}`,
+            html: `<p>Hi ${user.displayName || user.username},</p><p>Click <a href="${verifyUrl}">here</a> to verify your account.</p>`
+          });
+        });
+      } catch (templateErr) {
+        console.error('Verification email error:', templateErr?.message);
+        // Fallback to sendMail
+        await sendMail({
+          to: user.email,
+          subject: 'Verify your VibeNest account',
+          text: `Verify your VibeNest account: ${verifyUrl}`,
+          html: `<p>Hi ${user.displayName || user.username},</p><p>Click <a href="${verifyUrl}">here</a> to verify your account.</p>`
+        });
+      }
     }
 
     res.render('check-email', { email: email || '', under13: false });
@@ -1376,12 +1575,35 @@ app.post('/admin/resend-verification', isAuthenticated, async (req, res) => {
     const base = app.locals.BASE_URL;
     const verifyUrl = `${base.replace(/\/$/, '')}/verify/${token}`;
 
-    await sendMail({
-      to: target.email,
-      subject: 'Verify your VibeNest account',
-      text: `Please verify your VibeNest account by visiting: ${verifyUrl}`,
-      html: `<p>Hi ${target.displayName || target.username},</p><p>Please verify your VibeNest account by clicking the link below (valid for 24 hours):</p><p><a href="${verifyUrl}">${verifyUrl}</a></p>`
-    });
+    // Send using Supabase email template
+    try {
+      await supabaseAdmin.auth.admin.sendRawEmail({
+        email: target.email,
+        template: 'verify',
+        data: {
+          displayName: target.displayName || target.username,
+          verifyUrl: verifyUrl
+        }
+      }).catch(async (err) => {
+        // Fallback to sendMail if template fails
+        console.warn('Supabase template send failed, using fallback:', err?.message);
+        return sendMail({
+          to: target.email,
+          subject: 'Verify your VibeNest account',
+          text: `Please verify your VibeNest account by visiting: ${verifyUrl}`,
+          html: `<p>Hi ${target.displayName || target.username},</p><p>Please verify your VibeNest account by clicking the link below (valid for 24 hours):</p><p><a href="${verifyUrl}">${verifyUrl}</a></p>`
+        });
+      });
+    } catch (templateErr) {
+      console.error('Verification email error:', templateErr?.message);
+      // Fallback to sendMail
+      await sendMail({
+        to: target.email,
+        subject: 'Verify your VibeNest account',
+        text: `Please verify your VibeNest account by visiting: ${verifyUrl}`,
+        html: `<p>Hi ${target.displayName || target.username},</p><p>Please verify your VibeNest account by clicking the link below (valid for 24 hours):</p><p><a href="${verifyUrl}">${verifyUrl}</a></p>`
+      });
+    }
 
     res.render('resend-verification-admin', { user, message: `Verification sent to ${target.email}` });
   } catch (err) {
@@ -1491,21 +1713,40 @@ app.get('/setup-2fa', isAuthenticated, async (req, res) => {
       console.error('QR generation error:', e && e.message);
     }
 
-    res.render('setup-2fa', { user: req.user, qrCodeImage, secret, error: null, message: null, plainCodes: null });
+    res.render('setup-2fa', { user: req.user, qrCodeImage, secret, error: null, message: null, plainCodes: null, magicLinkEmail: user.magicLinkEmail || '' });
   } catch (err) {
     console.error(err);
-    res.render('setup-2fa', { user: req.user, qrCodeImage: null, secret: null, error: 'Error loading 2FA setup', plainCodes: null });
+    res.render('setup-2fa', { user: req.user, qrCodeImage: null, secret: null, error: 'Error loading 2FA setup', plainCodes: null, magicLinkEmail: '' });
   }
 });
 
-// Enable email 2FA
-app.post('/enable-email-2fa', isAuthenticated, async (req, res) => {
+// Setup magic link 2FA
+app.post('/setup-magic-link-2fa', isAuthenticated, async (req, res) => {
   try {
-    await supabaseDb.users.update(req.user.id, { is2FAEnabled: 'email' });
-    res.render('setup-2fa', { user: req.user, qrCodeImage: null, secret: null, error: null, message: 'Email 2FA enabled', plainCodes: null });
+    const { magicLinkEmail } = req.body;
+    if (!magicLinkEmail || !magicLinkEmail.includes('@')) {
+      return res.json({ success: false, error: 'Valid email required' });
+    }
+
+    await supabaseDb.users.update(req.user.id, { is2FAEnabled: 'magic_link', magicLinkEmail: magicLinkEmail });
+    res.json({ success: true, message: 'Magic link 2FA enabled', magicLinkEmail });
   } catch (err) {
     console.error(err);
-    res.render('setup-2fa', { user: req.user, qrCodeImage: null, secret: null, error: 'Failed to enable email 2FA', plainCodes: null });
+    res.json({ success: false, error: 'Failed to setup magic link 2FA' });
+  }
+});
+
+// Enable email 2FA (kept for backward compatibility but redirects to magic link)
+app.post('/enable-email-2fa', isAuthenticated, async (req, res) => {
+  try {
+    // Redirect to magic link setup with account email
+    const user = await supabaseDb.users.findById(req.user.id);
+    await supabaseDb.users.update(req.user.id, { is2FAEnabled: 'magic_link', magicLinkEmail: user.email });
+    const updatedUser = await supabaseDb.users.findById(req.user.id);
+    res.render('setup-2fa', { user: req.user, qrCodeImage: null, secret: null, error: null, message: 'Magic link 2FA enabled', plainCodes: null, magicLinkEmail: updatedUser.magicLinkEmail || '' });
+  } catch (err) {
+    console.error(err);
+    res.render('setup-2fa', { user: req.user, qrCodeImage: null, secret: null, error: 'Failed to enable magic link 2FA', plainCodes: null, magicLinkEmail: '' });
   }
 });
 
