@@ -41,9 +41,10 @@ console.log('[SUPABASE-AUTH] Script loaded');
     
     if (module) {
       try {
-        ({ createClient } = module);
-        console.log('[SUPABASE-AUTH] Supabase library loaded, creating client...');
-        
+        // The local bundle exposes createSupabaseClient which returns an initialized client
+        ({ createSupabaseClient } = module);
+        console.log('[SUPABASE-AUTH] Supabase library loaded, creating client via bundle...');
+
         // Validate credentials are properly set
         if (!window.SUPABASE_URL || typeof window.SUPABASE_URL !== 'string' || !window.SUPABASE_URL.includes('supabase')) {
           console.error('[SUPABASE-AUTH] Invalid SUPABASE_URL:', typeof window.SUPABASE_URL);
@@ -56,21 +57,14 @@ console.log('[SUPABASE-AUTH] Script loaded');
           const keyPreview = window.SUPABASE_ANON_KEY.substring(0, 10) + '...' + window.SUPABASE_ANON_KEY.substring(window.SUPABASE_ANON_KEY.length - 5);
           console.log('[SUPABASE-AUTH] URL:', window.SUPABASE_URL.substring(0, 30) + '...');
           console.log('[SUPABASE-AUTH] Key (preview):', keyPreview, '(length:', window.SUPABASE_ANON_KEY.length + ')');
-          
-          // Create the Supabase client
-          // The createClient function should be synchronous now since it's using window.supabase
+
+          // Create the Supabase client using the bundle helper
           try {
-            supabase = createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY, {
-              auth: {
-                storage: window.localStorage,
-                autoRefreshToken: true,
-                persistSession: true,
-                detectSessionInUrl: true
-              }
-            });
-            console.log('[SUPABASE-AUTH] Client created successfully with credentials');
+            // createSupabaseClient returns a client created via createClient(url, key)
+            supabase = await createSupabaseClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
+            console.log('[SUPABASE-AUTH] Client created successfully with bundle');
           } catch (callErr) {
-            console.error('[SUPABASE-AUTH] Failed to call createClient:', callErr && callErr.message);
+            console.error('[SUPABASE-AUTH] Failed to create client from bundle:', callErr && callErr.message);
             supabase = null;
           }
         }
@@ -303,15 +297,55 @@ console.log('[SUPABASE-AUTH] Script loaded');
       supabase.auth.onAuthStateChange(async (event, sessionData) => {
         try {
           const session = sessionData && sessionData.session ? sessionData.session : null;
-          if (event === 'SIGNED_IN' && session) {
+          if ((event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') && session) {
+            // Exchange refreshed or newly signed-in session with server bridge to keep server session in sync
             const r = await sendSessionToServer(session);
-            if (r && r.ok) window.location = '/';
+            if (r && r.ok && event === 'SIGNED_IN') window.location = '/';
           }
         } catch (err) {
           console.warn('onAuthStateChange handler error:', err && err.message);
         }
       });
     }
+
+    // Expose helper functions to global for other scripts to call
+    window.supabaseAuthHelpers = {
+      signUpUser: async (email, password) => {
+        if (!supabase || !supabase.auth) throw new Error('Supabase client not initialized');
+        const { data, error } = await supabase.auth.signUp({ email, password, options: { emailRedirectTo: (window.BASE_URL || window.location.origin) } });
+        if (error) console.error('signUpUser error:', error.message);
+        return { data, error };
+      },
+      inviteUser: async (email) => {
+        // Invite must be performed server-side. Call the server endpoint that uses the Admin key.
+        try {
+          const resp = await fetch('/api/invite-user', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email }) });
+          const json = await resp.json().catch(() => ({}));
+          return { data: json, error: resp.ok ? null : new Error(json && json.error ? json.error : 'Invite failed') };
+        } catch (err) {
+          console.error('inviteUser error:', err);
+          return { data: null, error: err };
+        }
+      },
+      sendMagicLink: async (email) => {
+        if (!supabase || !supabase.auth) throw new Error('Supabase client not initialized');
+        const { data, error } = await supabase.auth.signInWithOtp({ email, options: { emailRedirectTo: (window.BASE_URL || window.location.origin) } });
+        if (error) console.error('sendMagicLink error:', error.message);
+        return { data, error };
+      },
+      changeUserEmail: async (newEmail) => {
+        if (!supabase || !supabase.auth) throw new Error('Supabase client not initialized');
+        const { data, error } = await supabase.auth.updateUser({ email: newEmail });
+        if (error) console.error('changeUserEmail error:', error.message);
+        return { data, error };
+      },
+      resetPassword: async (email) => {
+        if (!supabase || !supabase.auth) throw new Error('Supabase client not initialized');
+        const { data, error } = await supabase.auth.resetPasswordForEmail(email, { redirectTo: (window.BASE_URL || window.location.origin) });
+        if (error) console.error('resetPassword error:', error.message);
+        return { data, error };
+      }
+    };
 
     // Handle OAuth links - they will navigate to /auth/google or /auth/entra
     // No need to intercept since we're using standard href links now
@@ -452,6 +486,84 @@ console.log('[SUPABASE-AUTH] Script loaded');
         }
       });
     }
+
+    // Wire any elements that declare data-supabase-action attributes to the helper functions
+    const actionElements = document.querySelectorAll('[data-supabase-action]');
+    actionElements.forEach(el => {
+      const action = el.getAttribute('data-supabase-action');
+      const getEmailFrom = (selector) => {
+        if (!selector) return null;
+        const inp = document.querySelector(selector);
+        return inp ? inp.value : null;
+      };
+
+      const handler = async (ev) => {
+        ev.preventDefault();
+        try {
+          switch (action) {
+            case 'send-magic-link': {
+              const email = el.getAttribute('data-email') || getEmailFrom(el.getAttribute('data-email-input'));
+              if (!email) return alert('Please provide an email');
+              const { error } = await window.supabaseAuthHelpers.sendMagicLink(email);
+              if (error) return alert('Failed to send magic link: ' + (error.message || error));
+              alert('Magic link sent to ' + email);
+              break;
+            }
+            case 'invite-user': {
+              const email = el.getAttribute('data-email') || getEmailFrom(el.getAttribute('data-email-input'));
+              if (!email) return alert('Please provide an email');
+              const { data, error } = await window.supabaseAuthHelpers.inviteUser(email);
+              if (error) return alert('Invite failed: ' + (error.message || error));
+              alert('Invitation sent to ' + email);
+              break;
+            }
+            case 'change-email': {
+              const email = el.getAttribute('data-email') || getEmailFrom(el.getAttribute('data-email-input'));
+              if (!email) return alert('Please provide an email');
+              const { error } = await window.supabaseAuthHelpers.changeUserEmail(email);
+              if (error) return alert('Email change failed: ' + (error.message || error));
+              alert('Email update requested — check your inbox for confirmation');
+              break;
+            }
+            case 'reset-password': {
+              const email = el.getAttribute('data-email') || getEmailFrom(el.getAttribute('data-email-input'));
+              if (!email) return alert('Please provide an email');
+              const { error } = await window.supabaseAuthHelpers.resetPassword(email);
+              if (error) return alert('Reset failed: ' + (error.message || error));
+              alert('Password reset sent to ' + email);
+              break;
+            }
+            case 'sign-up-user': {
+              // find inputs inside parent form or via attributes
+              const parentForm = el.closest('form');
+              let email, password;
+              if (parentForm) {
+                const fd = new FormData(parentForm);
+                email = fd.get('email'); password = fd.get('password');
+              }
+              email = email || el.getAttribute('data-email') || getEmailFrom(el.getAttribute('data-email-input'));
+              password = password || el.getAttribute('data-password') || getEmailFrom(el.getAttribute('data-password-input'));
+              if (!email || !password) return alert('Please provide email and password');
+              const { error } = await window.supabaseAuthHelpers.signUpUser(email, password);
+              if (error) return alert('Signup failed: ' + (error.message || error));
+              alert('Signup initiated — check your email for confirmation');
+              break;
+            }
+            default:
+              console.warn('Unknown supabase action:', action);
+          }
+        } catch (err) {
+          console.error('Action handler error:', err);
+          alert('Error: ' + (err && err.message));
+        }
+      };
+
+      if (el.tagName.toLowerCase() === 'form') {
+        el.addEventListener('submit', handler);
+      } else {
+        el.addEventListener('click', handler);
+      }
+    });
 
   } catch (e) {
     // Log detailed error info for debugging

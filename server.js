@@ -584,6 +584,7 @@ app.post('/auth/supabase/session', async (req, res) => {
 // Resolve usernames (frontend can query to turn username -> email for supabase sign-in)
 app.get('/api/resolve-username', async (req, res) => {
   try {
+    console.log('[RESOLVE] incoming', req.method, req.originalUrl, req.query);
     const username = req.query.username;
     if (!username) return res.status(400).json({ error: 'Missing username' });
 
@@ -610,12 +611,31 @@ app.get('/api/resolve-username', async (req, res) => {
       }
     }
 
-    // Not found
-    return res.status(404).json({ error: 'Username not found' });
+    // Not found - return 200 with empty object for client-friendly response
+    return res.json({});
   } catch (err) {
     console.error('resolve-username error:', err && err.message);
     return res.status(500).json({ error: 'Internal server error' });
   }
+
+// Invite user via Supabase Admin (server-side) - expects JSON { email }
+app.post('/api/invite-user', async (req, res) => {
+  try {
+    const { email } = req.body || {};
+    if (!email) return res.status(400).json({ error: 'Missing email' });
+    if (!supabaseAdmin) return res.status(500).json({ error: 'Supabase admin client not configured' });
+
+    const { data, error } = await supabaseAdmin.auth.admin.inviteUserByEmail(email);
+    if (error) {
+      console.error('[INVITE] Error inviting user:', error);
+      return res.status(500).json({ error: error.message || 'Invite failed' });
+    }
+    return res.json({ ok: true, data });
+  } catch (err) {
+    console.error('[INVITE] Unexpected error:', err && err.message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
 });
 
 // Home / Feed
