@@ -422,7 +422,7 @@ app.post('/auth/supabase/session', async (req, res) => {
         let existingProfile = null;
         if (supabaseAdmin && targetId) {
           try {
-            const { data: pData, error: pErr } = await supabaseAdmin.from('profiles').select('*').eq('id', targetId).limit(1).single();
+            const { data: pData, error: pErr } = await supabaseAdmin.from('profiles').select('*').eq('id', targetId).limit(1).maybeSingle(); // maybeSingle: profile creation can lag behind auth user creation due to DB trigger timing
             if (!pErr && pData) existingProfile = pData;
           } catch (e) {
             console.log('[AUTH] ⚠️  Could not fetch existing profile for setup:', e?.message);
@@ -470,7 +470,7 @@ app.post('/auth/supabase/session', async (req, res) => {
             .select('*')
             .eq('id', targetId)
             .limit(1)
-            .single();
+            .maybeSingle(); // maybeSingle: profile creation can lag behind auth user creation due to DB trigger timing
           
           if (!pErr && pData) {
             supaProfile = pData;
@@ -572,7 +572,7 @@ app.get('/api/resolve-username', async (req, res) => {
     // Next, if Supabase admin client is available, look up the profile and attempt to fetch auth user
     if (supabaseAdmin) {
       try {
-        const { data: profileData, error: profileErr } = await supabaseAdmin.from('profiles').select('id').eq('username', username).limit(1).single();
+        const { data: profileData, error: profileErr } = await supabaseAdmin.from('profiles').select('id').eq('username', username).limit(1).maybeSingle(); // maybeSingle: profile row may not exist immediately after auth creation due to trigger timing
         if (!profileErr && profileData && profileData.id) {
           // Try to fetch auth.user by id using admin API
           try {
@@ -827,7 +827,7 @@ app.post('/oauth/setup', async (req, res) => {
 
     // Ensure username unique (check profiles table first, then local mapping)
     if (supabaseAdmin) {
-      const { data: existing, error: e } = await supabaseAdmin.from('profiles').select('id').eq('username', username).limit(1).single();
+      const { data: existing, error: e } = await supabaseAdmin.from('profiles').select('id').eq('username', username).limit(1).maybeSingle(); // maybeSingle: avoid treating missing profile as error during signup/OAuth due to trigger timing
       if (existing && existing.id) {
         return res.render('oauth-setup', { suggestedUsername: username, suggestedDisplayName: displayName || '', error: 'Username already taken' });
       }
