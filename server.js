@@ -522,38 +522,8 @@ app.post('/auth/supabase/session', async (req, res) => {
         // If still no user, create profile in Supabase if service role available
         if (!localUser && supabaseAdmin) {
           try {
-            console.log('[AUTH] 🆕 Creating profile in Supabase profiles table...');
-            const defaultUsername = `user-${targetId.slice(0, 8)}`;
-            const { error: insertErr } = await supabaseAdmin
-              .from('profiles')
-              .insert({
-                id: targetId,
-                username: defaultUsername,
-                display_name: defaultUsername,
-                created_at: new Date().toISOString()
-              });
-            
-            if (insertErr) {
-              console.log('[AUTH] ⚠️  Supabase profile insert error:', insertErr?.message);
-            } else {
-              console.log('[AUTH] ✓ Supabase profile created successfully');
-              // Create local mapping
-              localUser = {
-                id: targetId,
-                uid: targetId,
-                username: defaultUsername,
-                email: `${defaultUsername}@oauth.local`,
-                displayName: defaultUsername,
-                authProvider: 'supabase',
-                verified: 1
-              };
-              try {
-                await supabaseDb.users.create(localUser);
-                console.log('[AUTH] ✓ Local mapping created after profile creation');
-              } catch (e) {
-                console.log('[AUTH] ⚠️  Local mapping creation failed:', e?.message);
-              }
-            }
+            // Profiles must be created by Supabase auth triggers; do not insert into profiles table from the server to avoid FK violations.
+        console.log('[AUTH] ℹ️ Profile creation skipped on server; expecting Supabase auth trigger to create the profile');
           } catch (e) {
             console.log('[AUTH] ⚠️  Error creating Supabase profile:', e?.message);
           }
@@ -873,18 +843,8 @@ app.post('/oauth/setup', async (req, res) => {
     // Create profile in Supabase (service role)
     if (supabaseAdmin) {
       try {
-        const insertObj = {
-          id: userId,
-          username: username,
-          display_name: displayName || username,
-          created_at: new Date().toISOString()
-        };
-        const { error: insertErr } = await supabaseAdmin.from('profiles').insert(insertObj);
-        if (insertErr) {
-          console.log('[OAUTH-SETUP] Supabase profile insert error:', insertErr.message || insertErr);
-        } else {
-          console.log('[OAUTH-SETUP] Supabase profile created for', username);
-        }
+        // Profiles are managed by Supabase auth triggers; avoid manual insert to profiles table.
+        console.log('[OAUTH-SETUP] Skipping manual profiles insert; profile creation should be handled by Supabase auth trigger.');
       } catch (e) {
         console.warn('[OAUTH-SETUP] Error creating Supabase profile:', e && e.message);
       }
