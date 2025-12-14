@@ -31,9 +31,14 @@ console.log('[SUPABASE-AUTH] Script loaded');
       module = await import('/js/supabase-client.mjs');
     } catch (loadErr) {
       console.error('[SUPABASE-AUTH] Failed to load local supabase module:', loadErr && loadErr.message);
-      // Cannot proceed if module doesn't load and Supabase lib isn't global
-      console.error('[SUPABASE-AUTH] Supabase will not be available');
-      module = null;
+      // Fall back to global Supabase if available (loaded via CDN)
+      if (window.supabase && window.supabase.createClient) {
+        console.log('[SUPABASE-AUTH] Falling back to global Supabase client');
+        module = { createClient: window.supabase.createClient };
+      } else {
+        console.error('[SUPABASE-AUTH] Supabase will not be available');
+        module = null;
+      }
     }
     
     let supabase = null;
@@ -41,9 +46,9 @@ console.log('[SUPABASE-AUTH] Script loaded');
     
     if (module) {
       try {
-        // The local bundle exposes createSupabaseClient which returns an initialized client
-        ({ createSupabaseClient } = module);
-        console.log('[SUPABASE-AUTH] Supabase library loaded, creating client via bundle...');
+        // Check if we have the bundle's createSupabaseClient or the global createClient
+        let createClient = module.createSupabaseClient || module.createClient;
+        console.log('[SUPABASE-AUTH] Supabase library loaded, creating client...');
 
         // Validate credentials are properly set
         if (!window.SUPABASE_URL || typeof window.SUPABASE_URL !== 'string' || !window.SUPABASE_URL.includes('supabase')) {
@@ -58,13 +63,12 @@ console.log('[SUPABASE-AUTH] Script loaded');
           console.log('[SUPABASE-AUTH] URL:', window.SUPABASE_URL.substring(0, 30) + '...');
           console.log('[SUPABASE-AUTH] Key (preview):', keyPreview, '(length:', window.SUPABASE_ANON_KEY.length + ')');
 
-          // Create the Supabase client using the bundle helper
+          // Create the Supabase client
           try {
-            // createSupabaseClient returns a client created via createClient(url, key)
-            supabase = await createSupabaseClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
-            console.log('[SUPABASE-AUTH] Client created successfully with bundle');
+            supabase = createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
+            console.log('[SUPABASE-AUTH] Client created successfully');
           } catch (callErr) {
-            console.error('[SUPABASE-AUTH] Failed to create client from bundle:', callErr && callErr.message);
+            console.error('[SUPABASE-AUTH] Failed to create client:', callErr && callErr.message);
             supabase = null;
           }
         }
@@ -368,7 +372,7 @@ console.log('[SUPABASE-AUTH] Script loaded');
 
         // create account via Supabase client (this will trigger email confirmation if configured)
         try {
-          console.log('[SUPABASE-AUTH] Starting signup...');
+          console.log('[SUPABASE-AUTH] Starting signup with email:', email);
           const { data, error } = await supabase.auth.signUp({ 
             email, 
             password,
@@ -376,31 +380,13 @@ console.log('[SUPABASE-AUTH] Script loaded');
               data: { username, displayName }
             }
           });
+          console.log('[SUPABASE-AUTH] signUp response:', { data: data ? 'present' : 'null', error: error ? error.message : 'none' });
           if (error) throw error;
           if (data && data.user) {
-            console.log('[SUPABASE-AUTH] Signup successful, creating profile...');
+            console.log('[SUPABASE-AUTH] Signup successful, user ID:', data.user.id, 'email confirmed:', data.user.email_confirmed_at ? 'yes' : 'no');
             
-            // Create profile entry in our database
-            try {
-              const profileResp = await fetch('/api/register-profile', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  userId: data.user.id,
-                  username: username,
-                  displayName: displayName,
-                  email: email
-                })
-              });
-              if (profileResp.ok) {
-                console.log('[SUPABASE-AUTH] Profile created successfully');
-              } else {
-                const err = await profileResp.json();
-                console.warn('[SUPABASE-AUTH] Profile creation warning:', err);
-              }
-            } catch (e) {
-              console.warn('[SUPABASE-AUTH] Could not create profile:', e?.message);
-            }
+            // Note: Profile creation is now handled by database trigger on auth.users insert
+            // No need to manually create profile here
             
             // If signUp returned a session, exchange it; otherwise server will handle after email confirm
             if (data.session) {

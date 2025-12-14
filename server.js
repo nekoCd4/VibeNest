@@ -63,6 +63,13 @@ app.locals.SUPABASE_ENABLED = !!(process.env.SUPABASE_URL && process.env.SUPABAS
 app.locals.SUPABASE_BUCKET = process.env.SUPABASE_BUCKET || null;
 app.locals.SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || null;
 
+console.log('[SERVER] Supabase configuration:', {
+  SUPABASE_URL: process.env.SUPABASE_URL ? '✓ Set' : '✗ Missing',
+  SUPABASE_ANON_KEY: process.env.SUPABASE_ANON_KEY ? '✓ Set' : '✗ Missing',
+  SUPABASE_SERVICE_ROLE_KEY: process.env.SUPABASE_SERVICE_ROLE_KEY ? '✓ Set' : '✗ Missing',
+  SUPABASE_BUCKET: process.env.SUPABASE_BUCKET ? '✓ Set' : '✗ Missing'
+});
+
 // Session middleware
 app.use(session({
   secret: sessionSecret,
@@ -1065,50 +1072,107 @@ app.post('/forgot-password', async (req, res) => {
   }
 });
 
-// Registration is handled by Supabase Auth in production. Block local registrations.
+// Registration is handled by Supabase Auth in production. Allow local registrations in development/testing.
 app.post('/register', async (req, res) => {
-  res.status(403).render('error', { error: 'Registration is disabled. Use Supabase Auth to create accounts.' });
+  try {
+    const { displayName, username, email, password, confirmPassword } = req.body || {};
+    // Basic validation
+    if (!username || !email || !password) {
+      return res.render('register', { message: 'Please provide username, email and password', GOOGLE_OAUTH: app.locals.GOOGLE_OAUTH, ENTRA_OAUTH: app.locals.ENTRA_OAUTH, SUPABASE_ANON_KEY: app.locals.SUPABASE_ANON_KEY, user: req.user });
+    }
+    if (password !== confirmPassword) {
+      return res.render('register', { message: 'Passwords do not match', GOOGLE_OAUTH: app.locals.GOOGLE_OAUTH, ENTRA_OAUTH: app.locals.ENTRA_OAUTH, SUPABASE_ANON_KEY: app.locals.SUPABASE_ANON_KEY, user: req.user });
+    }
+
+    // Check uniqueness
+    const existingByName = await supabaseDb.users.findByUsername(username).catch(() => null);
+    if (existingByName) return res.render('register', { message: 'Username already taken', GOOGLE_OAUTH: app.locals.GOOGLE_OAUTH, ENTRA_OAUTH: app.locals.ENTRA_OAUTH, SUPABASE_ANON_KEY: app.locals.SUPABASE_ANON_KEY, user: req.user });
+    const existingByEmail = await supabaseDb.users.findByEmail(email).catch(() => null);
+    if (existingByEmail) return res.render('register', { message: 'Email already registered', GOOGLE_OAUTH: app.locals.GOOGLE_OAUTH, ENTRA_OAUTH: app.locals.ENTRA_OAUTH, SUPABASE_ANON_KEY: app.locals.SUPABASE_ANON_KEY, user: req.user });
+
+    // Create user locally (password hashed)
+    const hashed = bcrypt.hashSync(password, 10);
+    const id = uuidv4();
+    const newUser = {
+      id,
+      uid: id,
+      username,
+      displayName: displayName || username,
+      email,
+      password: hashed,
+      authProvider: 'local',
+      verified: 1
+    };
+
+    await supabaseDb.users.create(newUser);
+
+    // Note: Profile creation is now handled by database trigger
+    // Removed manual profile insert to avoid conflicts
+
+    // Log the user in via session
+    req.logIn(newUser, (err) => {
+      if (err) {
+        console.error('Failed to create session after registration:', err && err.message);
+        return res.status(500).render('error', { error: 'Registration succeeded but failed to create session' });
+      }
+      return res.redirect('/');
+    });
+  } catch (err) {
+    console.error('Registration error:', err && err.message);
+    res.status(500).render('register', { message: 'Error creating account', GOOGLE_OAUTH: app.locals.GOOGLE_OAUTH, ENTRA_OAUTH: app.locals.ENTRA_OAUTH, SUPABASE_ANON_KEY: app.locals.SUPABASE_ANON_KEY, user: req.user });
+  }
 });
 
 // Client-side Supabase signup will handle account creation
-// This endpoint is called AFTER successful Supabase signup to create the profile entry
+// This endpoint is called AFTER successful Supabase signup to confirm the profile exists
 app.post('/api/register-profile', async (req, res) => {
   try {
     const { userId, username, displayName, email } = req.body || {};
-    console.log('[REGISTER] 📝 Profile creation request:', { userId: userId?.substring(0, 8), username, displayName, email });
+    console.log('[REGISTER] 📝 Profile check request:', { userId: userId?.substring(0, 8), username, displayName, email });
 
     if (!userId || !username) {
       return res.status(400).json({ error: 'userId and username required' });
     }
 
-    // Check if profile already exists
+    // If profile already exists return it
     console.log('[REGISTER] 🔍 Checking if profile already exists...');
-    const existing = await supabaseDb.users.findById(userId);
+    const existing = await supabaseDb.users.findById(userId).catch(() => null);
     if (existing) {
-      console.log('[REGISTER] ✓ Profile already exists for', username);
+      console.log('[REGISTER] ✓ Profile already exists for', existing.username);
       return res.json({ ok: true, user: existing });
     }
 
-    // Create new profile
-    console.log('[REGISTER] 🆕 Creating new profile...');
-    const newUser = {
-      id: userId,
-      username: username,
-      displayName: displayName || username,
-      email: email,
-      authProvider: 'supabase'
-    };
+    // Wait for profiles row to be created by auth.users trigger (avoid manual inserts that can cause FK violations)
+    if (!supabaseAdmin) return res.status(500).json({ error: 'Supabase admin client not configured' });
 
-    try {
-      const created = await supabaseDb.users.create(newUser);
-      console.log('[REGISTER] ✓ Profile created successfully:', username);
-      return res.json({ ok: true, user: created });
-    } catch (e) {
-      console.error('[REGISTER] ❌ Failed to create profile:', e?.message);
-      return res.status(500).json({ error: 'Failed to create profile: ' + e?.message });
+    const maxAttempts = 10;
+    let attempt = 0;
+    let profile = null;
+    while (attempt < maxAttempts) {
+      attempt += 1;
+      const { data: pData, error: pErr } = await supabaseAdmin.from('profiles').select('*').eq('id', userId).limit(1).maybeSingle();
+      if (pErr) {
+        console.log('[REGISTER] Error querying profiles table:', pErr.message || pErr);
+        break;
+      }
+      if (pData) {
+        profile = pData;
+        break;
+      }
+      console.log('[REGISTER] Profile not found yet, retrying (' + attempt + '/' + maxAttempts + ')...');
+      await new Promise(r => setTimeout(r, 500));
     }
+
+    if (profile) {
+      const mapped = { id: profile.id, username: profile.username, email: email || null, displayName: profile.display_name };
+      console.log('[REGISTER] ✓ Found profile after wait:', mapped.username);
+      return res.json({ ok: true, user: mapped });
+    }
+
+    console.warn('[REGISTER] Profile still not found after waiting; client should retry or complete setup.');
+    return res.status(202).json({ ok: false, message: 'Profile not yet created. Please retry shortly or complete setup.' });
   } catch (err) {
-    console.error('[REGISTER] ❌ Error:', err?.message);
+    console.error('[REGISTER] Error:', err?.message);
     return res.status(500).json({ error: err?.message || 'Internal error' });
   }
 });

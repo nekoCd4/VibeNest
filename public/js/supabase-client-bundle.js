@@ -17,7 +17,12 @@ export async function createSupabaseClient(supabaseUrl, anonKey) {
     cachedClient = createClient(supabaseUrl, anonKey);
     return cachedClient;
   } catch (err) {
-    console.error('[SUPABASE] Failed to load client:', err);
+    console.error('[SUPABASE] Failed to load client from module, trying global:', err);
+    // Fall back to global Supabase if available
+    if (window.supabase && window.supabase.createClient) {
+      cachedClient = window.supabase.createClient(supabaseUrl, anonKey);
+      return cachedClient;
+    }
     throw err;
   }
 }
