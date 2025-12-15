@@ -159,7 +159,8 @@
     <!-- Tabs -->
     <div class="tabs">
       <button class="tab-btn active" data-tab="app">Authenticator App</button>
-      <button class="tab-btn" data-tab="email">Email</button>
+      <button class="tab-btn" data-tab="email">Email Code</button>
+      <button class="tab-btn" data-tab="magic">Magic Link</button>
     </div>
 
     <!-- Authenticator App Tab -->
@@ -191,19 +192,34 @@
       </form>
     </div>
 
-    <!-- Email Tab -->
+    <!-- Email Code Tab -->
     <div id="email-content" class="tab-content">
       <p>Receive a 6-digit code via email when you log in.</p>
       
       <form action="/enable-email-2fa" method="POST">
         <div class="form-group">
           <label for="email">Email Address</label>
-          <input type="email" id="email" name="email" value="<%= user.email %>" required readonly />
+          <input type="email" id="email" name="email" value="<%= user.email || '' %>" placeholder="Enter your email address" required />
         </div>
-        <button type="submit" class="btn btn-primary">Enable Email 2FA</button>
+        <button type="submit" class="btn btn-primary">Enable Email Code 2FA</button>
       </form>
 
       <p style="font-size: 0.85rem; color: var(--muted); margin-top: 16px;">A verification code will be sent to your email address each time you log in.</p>
+    </div>
+
+    <!-- Magic Link Tab -->
+    <div id="magic-content" class="tab-content">
+      <p>Receive a secure login link via email when you log in.</p>
+      
+      <form action="/enable-magic-link-2fa" method="POST">
+        <div class="form-group">
+          <label for="magicEmail">Email Address</label>
+          <input type="email" id="magicEmail" name="email" value="<%= user.email || '' %>" placeholder="Enter your email address" required />
+        </div>
+        <button type="submit" class="btn btn-primary">Enable Magic Link 2FA</button>
+      </form>
+
+      <p style="font-size: 0.85rem; color: var(--muted); margin-top: 16px;">A secure login link will be sent to your email address each time you log in. Click the link to complete authentication.</p>
     </div>
   </div>
 

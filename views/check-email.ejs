@@ -22,6 +22,10 @@
         <p class="note">
             If you don’t see the email within a few minutes, check your spam or junk folder.
         </p>
+        <form action="/resend-verification" method="post" style="margin-bottom: 20px;">
+            <input type="hidden" name="email" value="<%= email %>">
+            <button type="submit" class="btn btn-outline">Resend Email</button>
+        </form>
         <form action="/login" method="get">
             <button type="submit" class="btn btn-primary">Go to Login</button>
         </form>

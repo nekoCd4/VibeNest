@@ -795,7 +795,10 @@ app.get('/auth/callback', (req, res) => {
   // The tokens are in URL fragments (#), not query params
   // Browser will handle this client-side via supabase-auth.js
   // Just render a page that will process the fragments
-  res.render('oauth-callback', { SUPABASE_URL: process.env.SUPABASE_URL, SUPABASE_ANON_KEY: process.env.SUPABASE_ANON_KEY });
+  res.render('oauth-callback', { 
+    SUPABASE_URL: process.env.SUPABASE_URL || '', 
+    SUPABASE_ANON_KEY: process.env.SUPABASE_ANON_KEY || '' 
+  });
 });
 
 
@@ -1795,12 +1798,30 @@ app.post('/setup-magic-link-2fa', isAuthenticated, async (req, res) => {
   }
 });
 
-// Enable email 2FA (kept for backward compatibility but redirects to magic link)
+// Enable email 2FA (sends code to type in)
 app.post('/enable-email-2fa', isAuthenticated, async (req, res) => {
   try {
-    // Redirect to magic link setup with account email
-    const user = await supabaseDb.users.findById(req.user.id);
-    await supabaseDb.users.update(req.user.id, { is2FAEnabled: 'magic_link', magicLinkEmail: user.email });
+    const { email } = req.body;
+    if (!email) return res.render('setup-2fa', { user: req.user, qrCodeImage: null, secret: null, error: 'Email address required', plainCodes: null });
+
+    // Update user with email 2FA enabled and the email address
+    await supabaseDb.users.update(req.user.id, { is2FAEnabled: 'email', email2FAEmail: email });
+    const updatedUser = await supabaseDb.users.findById(req.user.id);
+    res.render('setup-2fa', { user: req.user, qrCodeImage: null, secret: null, error: null, message: 'Email code 2FA enabled', plainCodes: null, email2FAEmail: updatedUser.email2FAEmail || '' });
+  } catch (err) {
+    console.error(err);
+    res.render('setup-2fa', { user: req.user, qrCodeImage: null, secret: null, error: 'Failed to enable email code 2FA', plainCodes: null });
+  }
+});
+
+// Enable magic link 2FA (sends link to click)
+app.post('/enable-magic-link-2fa', isAuthenticated, async (req, res) => {
+  try {
+    const { email } = req.body;
+    if (!email) return res.render('setup-2fa', { user: req.user, qrCodeImage: null, secret: null, error: 'Email address required', plainCodes: null });
+
+    // Update user with magic link 2FA enabled and the email address
+    await supabaseDb.users.update(req.user.id, { is2FAEnabled: 'magic_link', magicLinkEmail: email });
     const updatedUser = await supabaseDb.users.findById(req.user.id);
     res.render('setup-2fa', { user: req.user, qrCodeImage: null, secret: null, error: null, message: 'Magic link 2FA enabled', plainCodes: null, magicLinkEmail: updatedUser.magicLinkEmail || '' });
   } catch (err) {
