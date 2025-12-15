@@ -11,6 +11,7 @@ create table if not exists profiles (
   is2fa_enabled text default 'none', -- 'none' | 'email' | 'authenticator'
   two_factor_secret text, -- store encrypted/hashed value (consider encrypting at rest)
   is_admin boolean default false,
+  magic_link_email text,
   created_at timestamptz default now()
 );
 

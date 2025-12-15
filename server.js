@@ -59,6 +59,34 @@ app.set('trust proxy', 1);
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static(join(__dirname, 'public')));
+// Security headers middleware (CSP, X-Frame-Options, Referrer-Policy, etc.)
+app.use((req, res, next) => {
+  const baseUrl = app.locals.BASE_URL || '';
+  const supabaseUrl = process.env.SUPABASE_URL || '';
+  const connectSrc = ["'self'", 'https://cdn.jsdelivr.net'];
+  if (baseUrl) connectSrc.push(baseUrl);
+  if (supabaseUrl) connectSrc.push(supabaseUrl);
+
+  // Restrictive but pragmatic CSP allowing local scripts/styles, jsdelivr CDN and Supabase origins
+  const csp = [
+    "default-src 'self'",
+    `script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net ${supabaseUrl ? supabaseUrl : ''}`.trim(),
+    "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net",
+    "img-src 'self' data: blob:",
+    `connect-src ${connectSrc.join(' ')}`,
+    "font-src 'self' data:",
+    "object-src 'none'",
+    "frame-ancestors 'none'"
+  ].join('; ');
+
+  res.setHeader('Content-Security-Policy', csp);
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('X-XSS-Protection', '1; mode=block');
+  // Prevent caching of sensitive endpoints by default
+  res.setHeader('Pragma', 'no-cache');
+  next();
+});
 // No local /uploads route - all files served from Supabase storage
 
 // Expose whether Supabase is configured for views/clients
@@ -797,6 +825,9 @@ app.get('/login', (req, res) => {
   if (req.isAuthenticated()) {
     return res.redirect('/');
   }
+  // Debug: log whether server has a supabase client and anon key available
+  console.log('[LOGIN] Rendering login page - supabase client:', supabase ? 'initialized' : 'NULL', 'anonKeyPresent:', !!app.locals.SUPABASE_ANON_KEY);
+
   res.render('login', {
     message: req.query.message,
     GOOGLE_OAUTH: app.locals.GOOGLE_OAUTH,
@@ -1222,17 +1253,24 @@ app.post('/login', async (req, res) => {
     }
 
     if (!email) {
+      console.log('[LOGIN] Username lookup failed for', username);
       return res.render('login', { message: 'Invalid username or password', GOOGLE_OAUTH: app.locals.GOOGLE_OAUTH, ENTRA_OAUTH: app.locals.ENTRA_OAUTH, SUPABASE_ANON_KEY: app.locals.SUPABASE_ANON_KEY, user: req.user });
     }
 
     // Attempt login with Supabase
+    if (!supabase) {
+      console.error('[LOGIN] Supabase client not initialized; cannot sign in');
+      return res.render('login', { message: 'Authentication service not available', GOOGLE_OAUTH: app.locals.GOOGLE_OAUTH, ENTRA_OAUTH: app.locals.ENTRA_OAUTH, SUPABASE_ANON_KEY: app.locals.SUPABASE_ANON_KEY, user: req.user });
+    }
+
+    console.log('[LOGIN] Attempting signInWithPassword for email:', email.substring(0,6) + '...');
     const { data, error } = await supabase.auth.signInWithPassword({
       email,
       password
     });
 
     if (error) {
-      console.log('Login error:', error.message);
+      console.log('Login error:', error.message, 'status:', error.status || 'N/A');
       return res.render('login', { message: 'Invalid username or password', GOOGLE_OAUTH: app.locals.GOOGLE_OAUTH, ENTRA_OAUTH: app.locals.ENTRA_OAUTH, SUPABASE_ANON_KEY: app.locals.SUPABASE_ANON_KEY, user: req.user });
     }
 
