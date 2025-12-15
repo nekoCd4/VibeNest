@@ -24,6 +24,9 @@ import fs from 'fs';
 const supabaseAdminModule = await import('./lib/supabaseServer.js');
 const supabaseAdmin = supabaseAdminModule.default;
 
+const supabaseClientModule = await import('./lib/supabaseClient.js');
+const supabase = supabaseClientModule.default;
+
 console.log('[SERVER] Supabase admin client:', supabaseAdmin ? '✓ Loaded' : '✗ NULL');
 
 // Mailjet integration (will create a Nodemailer-compatible transporter wrapper)
@@ -422,8 +425,8 @@ app.post('/auth/supabase/session', async (req, res) => {
         let existingProfile = null;
         if (supabaseAdmin && targetId) {
           try {
-            const { data: pData, error: pErr } = await supabaseAdmin.from('profiles').select('*').eq('id', targetId).limit(1).maybeSingle(); // maybeSingle: profile creation can lag behind auth user creation due to DB trigger timing
-            if (!pErr && pData) existingProfile = pData;
+            const { data: pData } = await supabaseAdmin.from('profiles').select('*').eq('id', targetId).limit(1).maybeSingle(); // maybeSingle: profile creation can lag behind auth user creation due to DB trigger timing
+            if (pData) existingProfile = pData;
           } catch (e) {
             console.log('[AUTH] ⚠️  Could not fetch existing profile for setup:', e?.message);
           }
@@ -465,18 +468,18 @@ app.post('/auth/supabase/session', async (req, res) => {
         // Try to get profile from profiles table
         try {
           console.log('[AUTH]   Fetching user profile from Supabase profiles table...');
-          const { data: pData, error: pErr } = await supabaseAdmin
+          const { data: pData } = await supabaseAdmin
             .from('profiles')
             .select('*')
             .eq('id', targetId)
             .limit(1)
             .maybeSingle(); // maybeSingle: profile creation can lag behind auth user creation due to DB trigger timing
           
-          if (!pErr && pData) {
+          if (pData) {
             supaProfile = pData;
             console.log('[AUTH]   ✓ Got profile:', supaProfile.username);
           } else {
-            console.log('[AUTH]   ⚠️  Profile query error:', pErr?.message || 'No data');
+            console.log('[AUTH]   ⚠️  Profile not found yet (may be created shortly by auth trigger)');
           }
         } catch (e) {
           console.log('[AUTH]   ⚠️  Profile fetch exception:', e?.message);
@@ -572,8 +575,8 @@ app.get('/api/resolve-username', async (req, res) => {
     // Next, if Supabase admin client is available, look up the profile and attempt to fetch auth user
     if (supabaseAdmin) {
       try {
-        const { data: profileData, error: profileErr } = await supabaseAdmin.from('profiles').select('id').eq('username', username).limit(1).maybeSingle(); // maybeSingle: profile row may not exist immediately after auth creation due to trigger timing
-        if (!profileErr && profileData && profileData.id) {
+        const { data: profileData } = await supabaseAdmin.from('profiles').select('id').eq('username', username).limit(1).maybeSingle(); // maybeSingle: profile row may not exist immediately after auth creation due to trigger timing
+        if (profileData && profileData.id) {
           // Try to fetch auth.user by id using admin API
           try {
             const adminResp = await supabaseAdmin.auth.admin.getUserById(profileData.id);
@@ -827,7 +830,7 @@ app.post('/oauth/setup', async (req, res) => {
 
     // Ensure username unique (check profiles table first, then local mapping)
     if (supabaseAdmin) {
-      const { data: existing, error: e } = await supabaseAdmin.from('profiles').select('id').eq('username', username).limit(1).maybeSingle(); // maybeSingle: avoid treating missing profile as error during signup/OAuth due to trigger timing
+      const { data: existing } = await supabaseAdmin.from('profiles').select('id').eq('username', username).limit(1).maybeSingle(); // maybeSingle: avoid treating missing profile as error during signup/OAuth due to trigger timing
       if (existing && existing.id) {
         return res.render('oauth-setup', { suggestedUsername: username, suggestedDisplayName: displayName || '', error: 'Username already taken' });
       }
@@ -1044,39 +1047,55 @@ app.post('/register', async (req, res) => {
       return res.render('register', { message: 'Passwords do not match', GOOGLE_OAUTH: app.locals.GOOGLE_OAUTH, ENTRA_OAUTH: app.locals.ENTRA_OAUTH, SUPABASE_ANON_KEY: app.locals.SUPABASE_ANON_KEY, user: req.user });
     }
 
-    // Check uniqueness
-    const existingByName = await supabaseDb.users.findByUsername(username).catch(() => null);
-    if (existingByName) return res.render('register', { message: 'Username already taken', GOOGLE_OAUTH: app.locals.GOOGLE_OAUTH, ENTRA_OAUTH: app.locals.ENTRA_OAUTH, SUPABASE_ANON_KEY: app.locals.SUPABASE_ANON_KEY, user: req.user });
-    const existingByEmail = await supabaseDb.users.findByEmail(email).catch(() => null);
-    if (existingByEmail) return res.render('register', { message: 'Email already registered', GOOGLE_OAUTH: app.locals.GOOGLE_OAUTH, ENTRA_OAUTH: app.locals.ENTRA_OAUTH, SUPABASE_ANON_KEY: app.locals.SUPABASE_ANON_KEY, user: req.user });
+    console.log('[REGISTER] Attempting Supabase signUp for email:', email);
+    if (!supabase) {
+      console.error('[REGISTER] Supabase client is null');
+      return res.render('register', { message: 'Supabase not configured', GOOGLE_OAUTH: app.locals.GOOGLE_OAUTH, ENTRA_OAUTH: app.locals.ENTRA_OAUTH, SUPABASE_ANON_KEY: app.locals.SUPABASE_ANON_KEY, user: req.user });
+    }
 
-    // Create user locally (password hashed)
-    const hashed = bcrypt.hashSync(password, 10);
-    const id = uuidv4();
-    const newUser = {
-      id,
-      uid: id,
-      username,
-      displayName: displayName || username,
+    const baseUrl = process.env.BASE_URL || process.env.APP_URL;
+    if (!baseUrl) {
+      console.error('[REGISTER] BASE_URL or APP_URL not set');
+      return res.render('register', { message: 'Server configuration error', GOOGLE_OAUTH: app.locals.GOOGLE_OAUTH, ENTRA_OAUTH: app.locals.ENTRA_OAUTH, SUPABASE_ANON_KEY: app.locals.SUPABASE_ANON_KEY, user: req.user });
+    }
+
+    const { data, error } = await supabase.auth.signUp({
       email,
-      password: hashed,
-      authProvider: 'local',
-      verified: 1
-    };
-
-    await supabaseDb.users.create(newUser);
-
-    // Note: Profile creation is now handled by database trigger
-    // Removed manual profile insert to avoid conflicts
-
-    // Log the user in via session
-    req.logIn(newUser, (err) => {
-      if (err) {
-        console.error('Failed to create session after registration:', err && err.message);
-        return res.status(500).render('error', { error: 'Registration succeeded but failed to create session' });
+      password,
+      options: {
+        data: {
+          username,
+          display_name: displayName || username
+        },
+        emailRedirectTo: `${baseUrl}/auth/callback`
       }
-      return res.redirect('/');
     });
+
+    console.log('[REGISTER] signUp result:', { data: data ? 'success' : null, error: error ? error.message : null });
+
+    if (error) {
+      // Check if the error is related to email confirmation sending
+      const errorMsg = error.message.toLowerCase();
+      const isEmailError = errorMsg.includes('email') || errorMsg.includes('confirmation') || errorMsg.includes('send') || errorMsg.includes('mail');
+      
+      if (isEmailError) {
+        console.warn('[REGISTER] Email confirmation error detected, but proceeding with signup:', error.message);
+        // Treat as success and redirect to check email
+        return res.redirect(`/check-email?email=${encodeURIComponent(email)}`);
+      } else {
+        // Fatal error, show to user
+        return res.render('register', {
+          message: error.message,
+          GOOGLE_OAUTH: app.locals.GOOGLE_OAUTH,
+          ENTRA_OAUTH: app.locals.ENTRA_OAUTH,
+          SUPABASE_ANON_KEY: app.locals.SUPABASE_ANON_KEY,
+          user: req.user
+        });
+      }
+    }
+
+    // Success: redirect to check email
+    return res.redirect(`/check-email?email=${encodeURIComponent(email)}`);
   } catch (err) {
     console.error('Registration error:', err && err.message);
     res.status(500).render('register', { message: 'Error creating account', GOOGLE_OAUTH: app.locals.GOOGLE_OAUTH, ENTRA_OAUTH: app.locals.ENTRA_OAUTH, SUPABASE_ANON_KEY: app.locals.SUPABASE_ANON_KEY, user: req.user });
@@ -1110,11 +1129,7 @@ app.post('/api/register-profile', async (req, res) => {
     let profile = null;
     while (attempt < maxAttempts) {
       attempt += 1;
-      const { data: pData, error: pErr } = await supabaseAdmin.from('profiles').select('*').eq('id', userId).limit(1).maybeSingle();
-      if (pErr) {
-        console.log('[REGISTER] Error querying profiles table:', pErr.message || pErr);
-        break;
-      }
+      const { data: pData } = await supabaseAdmin.from('profiles').select('*').eq('id', userId).limit(1).maybeSingle();
       if (pData) {
         profile = pData;
         break;
