@@ -543,7 +543,50 @@ app.post('/auth/supabase/session', async (req, res) => {
     }
 
     console.log('[AUTH] ✓ User ready, establishing session...');
-    // Log the user in via express session
+    // Check if 2FA is enabled for this user
+    if (localUser.is2FAEnabled && localUser.is2FAEnabled !== 'none') {
+      console.log('[AUTH] 🔐 2FA enabled for user:', localUser.is2FAEnabled);
+      // Set up 2FA session instead of logging in
+      const twoFactor = {
+        userId: localUser.id,
+        method: localUser.is2FAEnabled,
+        email: localUser.is2FAEnabled === 'email' ? localUser.email2FAEmail : localUser.magicLinkEmail
+      };
+
+      if (localUser.is2FAEnabled === 'email') {
+        // Generate and send email code
+        const code = Math.floor(100000 + Math.random() * 900000).toString();
+        twoFactor.code = code;
+        twoFactor.expiresAt = Date.now() + 1000 * 60 * 10; // 10 minutes
+        req.session.twoFactor = twoFactor;
+
+        // Send email with code
+        try {
+          const email = localUser.email2FAEmail;
+          const subject = 'Your VibeNest login code';
+          const text = `Your login code is: ${code}\n\nThis code will expire in 10 minutes.`;
+          const html = `<p>Your login code is: <strong>${code}</strong></p><p>This code will expire in 10 minutes.</p>`;
+          
+          await sendMail({ to: email, subject, text, html });
+          console.log('[AUTH] 📧 Sent 2FA code to:', email);
+        } catch (emailErr) {
+          console.error('[AUTH] ❌ Failed to send 2FA email:', emailErr);
+          twoFactor.emailDeliveryFailed = true;
+          req.session.twoFactor = twoFactor;
+        }
+      } else if (localUser.is2FAEnabled === 'magic_link') {
+        // For magic link, just set the session - the 2FA page will send the link
+        req.session.twoFactor = twoFactor;
+      } else if (localUser.is2FAEnabled === 'authenticator') {
+        // For authenticator, just set the session
+        req.session.twoFactor = twoFactor;
+      }
+
+      console.log('[AUTH] ===== Supabase Session Request END (2FA REQUIRED) =====\n');
+      return res.json({ needs_2fa: true, method: localUser.is2FAEnabled });
+    }
+
+    // No 2FA - complete login
     req.logIn(localUser, (err) => {
       if (err) {
         console.error('[AUTH] ❌ Failed to create session:', err.message);
@@ -1157,7 +1200,48 @@ app.post('/api/register-profile', async (req, res) => {
 
 // Local login disabled — use Supabase Auth for user authentication in production
 app.post('/login', async (req, res) => {
-  res.status(403).render('error', { error: 'Login is disabled. Use Supabase Auth via the client.' });
+  try {
+    const { username, password } = req.body;
+    if (!username || !password) {
+      return res.render('login', { message: 'Username and password required', GOOGLE_OAUTH: app.locals.GOOGLE_OAUTH, ENTRA_OAUTH: app.locals.ENTRA_OAUTH, SUPABASE_ANON_KEY: app.locals.SUPABASE_ANON_KEY, user: req.user });
+    }
+
+    // Resolve username to email
+    let email = null;
+    if (supabaseAdmin) {
+      try {
+        const { data: profileData } = await supabaseAdmin.from('profiles').select('id').eq('username', username).limit(1).maybeSingle();
+        if (profileData && profileData.id) {
+          const adminResp = await supabaseAdmin.auth.admin.getUserById(profileData.id);
+          const fetchedUser = (adminResp && (adminResp.user || adminResp.data)) || adminResp;
+          if (fetchedUser && fetchedUser.email) email = fetchedUser.email;
+        }
+      } catch (e) {
+        console.warn('Error resolving username:', e && e.message);
+      }
+    }
+
+    if (!email) {
+      return res.render('login', { message: 'Invalid username or password', GOOGLE_OAUTH: app.locals.GOOGLE_OAUTH, ENTRA_OAUTH: app.locals.ENTRA_OAUTH, SUPABASE_ANON_KEY: app.locals.SUPABASE_ANON_KEY, user: req.user });
+    }
+
+    // Attempt login with Supabase
+    const { data, error } = await supabase.auth.signInWithPassword({
+      email,
+      password
+    });
+
+    if (error) {
+      console.log('Login error:', error.message);
+      return res.render('login', { message: 'Invalid username or password', GOOGLE_OAUTH: app.locals.GOOGLE_OAUTH, ENTRA_OAUTH: app.locals.ENTRA_OAUTH, SUPABASE_ANON_KEY: app.locals.SUPABASE_ANON_KEY, user: req.user });
+    }
+
+    // Login successful - redirect to callback to handle session
+    res.redirect('/auth/callback');
+  } catch (err) {
+    console.error('Login error:', err);
+    res.render('login', { message: 'Login failed', GOOGLE_OAUTH: app.locals.GOOGLE_OAUTH, ENTRA_OAUTH: app.locals.ENTRA_OAUTH, SUPABASE_ANON_KEY: app.locals.SUPABASE_ANON_KEY, user: req.user });
+  }
 });
 
 // 2FA Login Form
@@ -1167,7 +1251,7 @@ app.get('/2fa-login', (req, res) => {
   // Pass a debugCode for local development (helps when no mailer is configured)
   const debugCode = twoFactor.debug ? twoFactor.code : null;
   const emailDeliveryFailed = !!twoFactor.emailDeliveryFailed;
-  res.render('2fa-login', { error: null, twoFactorMethod: twoFactor.method, debugCode, emailDeliveryFailed });
+  res.render('2fa-login', { error: null, twoFactorMethod: twoFactor.method, debugCode, emailDeliveryFailed, userId: twoFactor.userId });
 });
 
 // Verify 2FA via authenticator token (not implemented) or email
@@ -1778,7 +1862,7 @@ app.get('/setup-2fa', isAuthenticated, async (req, res) => {
     res.render('setup-2fa', { user: req.user, qrCodeImage, secret, error: null, message: null, plainCodes: null, magicLinkEmail: user.magicLinkEmail || '' });
   } catch (err) {
     console.error(err);
-    res.render('setup-2fa', { user: req.user, qrCodeImage: null, secret: null, error: 'Error loading 2FA setup', plainCodes: null, magicLinkEmail: '' });
+    res.render('setup-2fa', { user: req.user, qrCodeImage: null, secret: null, error: 'Error loading 2FA setup', plainCodes: null, magicLinkEmail: '', message: null });
   }
 });
 
@@ -1802,7 +1886,7 @@ app.post('/setup-magic-link-2fa', isAuthenticated, async (req, res) => {
 app.post('/enable-email-2fa', isAuthenticated, async (req, res) => {
   try {
     const { email } = req.body;
-    if (!email) return res.render('setup-2fa', { user: req.user, qrCodeImage: null, secret: null, error: 'Email address required', plainCodes: null });
+    if (!email) return res.render('setup-2fa', { user: req.user, qrCodeImage: null, secret: null, error: 'Email address required', plainCodes: null, message: null });
 
     // Update user with email 2FA enabled and the email address
     await supabaseDb.users.update(req.user.id, { is2FAEnabled: 'email', email2FAEmail: email });
@@ -1810,15 +1894,20 @@ app.post('/enable-email-2fa', isAuthenticated, async (req, res) => {
     res.render('setup-2fa', { user: req.user, qrCodeImage: null, secret: null, error: null, message: 'Email code 2FA enabled', plainCodes: null, email2FAEmail: updatedUser.email2FAEmail || '' });
   } catch (err) {
     console.error(err);
-    res.render('setup-2fa', { user: req.user, qrCodeImage: null, secret: null, error: 'Failed to enable email code 2FA', plainCodes: null });
+    res.render('setup-2fa', { user: req.user, qrCodeImage: null, secret: null, error: 'Failed to enable email code 2FA', plainCodes: null, message: null });
   }
+});
+
+// Fallback GET route for 2FA setup (in case of redirect issues)
+app.get('/enable-email-2fa', isAuthenticated, (req, res) => {
+  res.redirect('/setup-2fa');
 });
 
 // Enable magic link 2FA (sends link to click)
 app.post('/enable-magic-link-2fa', isAuthenticated, async (req, res) => {
   try {
     const { email } = req.body;
-    if (!email) return res.render('setup-2fa', { user: req.user, qrCodeImage: null, secret: null, error: 'Email address required', plainCodes: null });
+    if (!email) return res.render('setup-2fa', { user: req.user, qrCodeImage: null, secret: null, error: 'Email address required', plainCodes: null, message: null });
 
     // Update user with magic link 2FA enabled and the email address
     await supabaseDb.users.update(req.user.id, { is2FAEnabled: 'magic_link', magicLinkEmail: email });
@@ -1826,8 +1915,13 @@ app.post('/enable-magic-link-2fa', isAuthenticated, async (req, res) => {
     res.render('setup-2fa', { user: req.user, qrCodeImage: null, secret: null, error: null, message: 'Magic link 2FA enabled', plainCodes: null, magicLinkEmail: updatedUser.magicLinkEmail || '' });
   } catch (err) {
     console.error(err);
-    res.render('setup-2fa', { user: req.user, qrCodeImage: null, secret: null, error: 'Failed to enable magic link 2FA', plainCodes: null, magicLinkEmail: '' });
+    res.render('setup-2fa', { user: req.user, qrCodeImage: null, secret: null, error: 'Failed to enable magic link 2FA', plainCodes: null, message: null, magicLinkEmail: '' });
   }
+});
+
+// Fallback GET route for magic link 2FA setup
+app.get('/enable-magic-link-2fa', isAuthenticated, (req, res) => {
+  res.redirect('/setup-2fa');
 });
 
 // Setup authenticator 2FA (simplified) — stores a random secret and marks authenticator as enabled
@@ -1890,7 +1984,7 @@ app.post('/setup-2fa', isAuthenticated, async (req, res) => {
     }
   } catch (err) {
     console.error(err);
-    res.render('setup-2fa', { user: req.user, qrCodeImage: null, secret: null, error: 'Failed to setup 2FA', plainCodes: null });
+    res.render('setup-2fa', { user: req.user, qrCodeImage: null, secret: null, error: 'Failed to setup 2FA', plainCodes: null, message: null });
   }
 });
 

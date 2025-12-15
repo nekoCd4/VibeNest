@@ -134,6 +134,13 @@ console.log('[SUPABASE-AUTH] Script loaded');
           return resp;
         }
 
+        // If server indicates 2FA is required, redirect to 2FA login
+        if (json && json.needs_2fa) {
+          console.log('[SUPABASE-AUTH] Server requires 2FA, redirecting to /2fa-login');
+          window.location = '/2fa-login';
+          return resp;
+        }
+
         if (!resp.ok) {
           const errBody = json || await resp.text().catch(() => ({}));
           console.error('[SUPABASE-AUTH] Server error:', errBody);
