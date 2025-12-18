@@ -1,1 +1,2 @@
-i want you to figure otu why it wont work when i try to login with supabas oauth it  sends the requts to supabase and it returns ture but it then reditrects back to /login but with an error url and doesnt actually make the account in supabase but it receive the account request
+Robust server-side fix: keep using the Supabase-hosted callback but implement a server-side fallback (authorization-code / token exchange) so authentication completes even when fragments are unavailable (works well in proxied previews like Codespaces but requires more code and provider config).
+

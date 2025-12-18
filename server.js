@@ -839,23 +839,25 @@ app.get('/login', (req, res) => {
 
 // OAuth redirect routes - redirect to Supabase's OAuth endpoints
 app.get('/auth/google', (req, res) => {
-  const baseUrl = process.env.BASE_URL || process.env.APP_URL || `http://localhost:${process.env.PORT || 3000}`;
-  const callbackUrl = `${baseUrl}/auth/callback`;
-  const redirectTo = encodeURIComponent(callbackUrl);
   const supabaseUrl = process.env.SUPABASE_URL;
+  // Prefer server-side callback for robust code-exchange fallback
+  const baseUrl = process.env.BASE_URL || process.env.APP_URL || `http://localhost:${process.env.PORT || 3000}`;
+  const serverCallback = `${baseUrl.replace(/\/$/, '')}/auth/supabase/callback`;
+  const redirectTo = encodeURIComponent(serverCallback);
   console.log('[OAUTH] 🔐 Google OAuth initiated');
-  console.log('[OAUTH] Callback URL:', callbackUrl);
-  console.log('[OAUTH] Redirect to Supabase:', `${supabaseUrl}/auth/v1/authorize?provider=google&redirect_to=${redirectTo}`);
-  res.redirect(`${supabaseUrl}/auth/v1/authorize?provider=google&redirect_to=${redirectTo}`);
+  console.log('[OAUTH] Using server-side callback for code exchange:', serverCallback);
+  // request response_type=code so Supabase will return an authorization code to our server callback
+  console.log('[OAUTH] Redirect to Supabase:', `${supabaseUrl}/auth/v1/authorize?provider=google&redirect_to=${redirectTo}&response_type=code`);
+  res.redirect(`${supabaseUrl}/auth/v1/authorize?provider=google&redirect_to=${redirectTo}&response_type=code`);
 });
 
 app.get('/auth/entra', (req, res) => {
-  const baseUrl = process.env.BASE_URL || process.env.APP_URL || `http://localhost:${process.env.PORT || 3000}`;
-  const callbackUrl = `${baseUrl}/auth/callback`;
-  const redirectTo = encodeURIComponent(callbackUrl);
   const supabaseUrl = process.env.SUPABASE_URL;
+  // Use SUPABASE_OAUTH_REDIRECT_URI (Supabase-hosted callback) when configured, otherwise fall back to the standard Supabase callback
+  const supabaseCallback = process.env.SUPABASE_OAUTH_REDIRECT_URI || `${supabaseUrl}/auth/v1/callback`;
+  const redirectTo = encodeURIComponent(supabaseCallback);
   console.log('[OAUTH] 🔐 Entra (Azure) OAuth initiated');
-  console.log('[OAUTH] Callback URL:', callbackUrl);
+  console.log('[OAUTH] Using Supabase callback:', supabaseCallback);
   console.log('[OAUTH] Redirect to Supabase:', `${supabaseUrl}/auth/v1/authorize?provider=azure&redirect_to=${redirectTo}`);
   res.redirect(`${supabaseUrl}/auth/v1/authorize?provider=azure&redirect_to=${redirectTo}`);
 });
@@ -1239,8 +1241,15 @@ app.post('/login', async (req, res) => {
 
     // Resolve identifier (email | username | display name) to a concrete email address
     let email = null;
-    const identifier = String(username).trim();
+    // Normalize identifier: trim and handle leading @ for display-name handles
+    let identifier = String(username).trim();
     try {
+      // If identifier starts with '@', treat it as a display name handle and strip leading '@'
+      if (identifier.startsWith('@')) {
+        identifier = identifier.slice(1);
+        // leave email null and fall through to display_name lookup below
+      }
+
       // If user supplied an email-like identifier, use it directly
       if (identifier.includes('@')) {
         email = identifier.toLowerCase();
@@ -1258,11 +1267,24 @@ app.post('/login', async (req, res) => {
         // If still not found, try matching display_name in profiles (case-insensitive)
         if (!email && supabaseAdmin) {
           try {
-            const { data: profileByDisplay } = await supabaseAdmin.from('profiles')
+            // Try matching stored display_name directly (case-insensitive)
+            let { data: profileByDisplay } = await supabaseAdmin.from('profiles')
               .select('id, display_name')
               .ilike('display_name', identifier)
               .limit(1)
               .maybeSingle();
+
+            // If not found, also try a stored value that includes a leading '@' for legacy users
+            if (!profileByDisplay) {
+              const alt = '@' + identifier;
+              const resp = await supabaseAdmin.from('profiles')
+                .select('id, display_name')
+                .ilike('display_name', alt)
+                .limit(1)
+                .maybeSingle();
+              profileByDisplay = resp && resp.data ? resp.data : resp;
+            }
+
             if (profileByDisplay && profileByDisplay.id) {
               const adminResp = await supabaseAdmin.auth.admin.getUserById(profileByDisplay.id).catch(() => null);
               const fetchedUser = (adminResp && (adminResp.user || adminResp.data)) || adminResp;
@@ -1547,6 +1569,60 @@ app.post('/2fa-resend', async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Failed to resend code' });
+  }
+});
+
+// Reset 2FA for a pending login and send a fresh account verification email
+app.post('/2fa-reset', async (req, res) => {
+  try {
+    const twoFactor = req.session.twoFactor;
+    if (!twoFactor) return res.status(400).json({ error: 'No login pending' });
+
+    const user = await supabaseDb.users.findById(twoFactor.userId);
+    if (!user) return res.status(400).json({ error: 'User not found' });
+
+    // Clear 2FA settings and backup codes
+    await supabaseDb.users.update(user.id, { is2FAEnabled: 'none', twoFactorSecret: null });
+    try {
+      await supabaseAdmin.from('backup_codes').delete().eq('user_id', user.id);
+    } catch (e) {
+      console.warn('[2FA-RESET] Failed to delete backup codes:', e && e.message);
+    }
+
+    // Create a new account verification token and send verification email (same as /resend-verification)
+    const token = crypto.randomBytes(32).toString('hex');
+    const expiresAt = new Date(Date.now() + 1000 * 60 * 60 * 24).toISOString(); // 24 hours
+    await supabaseDb.verifications.create(token, user.id, expiresAt);
+    const base = app.locals.BASE_URL;
+    const verifyUrl = `${base}/verify/${token}`;
+
+    try {
+      await supabaseAdmin.auth.admin.sendRawEmail({
+        email: user.email,
+        template: 'verify',
+        data: { displayName: user.displayName || user.username, verifyUrl }
+      }).catch(async (err) => {
+        console.warn('Supabase template send failed, using fallback:', err?.message);
+        return sendMail({
+          to: user.email,
+          subject: 'Verify your VibeNest account',
+          text: `Verify your VibeNest account: ${verifyUrl}`,
+          html: `<p>Hi ${user.displayName || user.username},</p><p>Click <a href="${verifyUrl}">here</a> to verify your account.</p>`
+        });
+      });
+    } catch (emailErr) {
+      console.error('[2FA-RESET] Verification email error:', emailErr && emailErr.message);
+      // fallback
+      await sendMail({ to: user.email, subject: 'Verify your VibeNest account', text: `Verify: ${verifyUrl}`, html: `<a href="${verifyUrl}">Verify</a>` });
+    }
+
+    // Clear twoFactor session so user can start over
+    delete req.session.twoFactor;
+
+    return res.json({ success: true, message: '2FA cleared. A verification email has been sent to your address. Please verify to continue.' });
+  } catch (err) {
+    console.error('[2FA-RESET] Error:', err);
+    return res.status(500).json({ error: 'Failed to reset 2FA' });
   }
 });
 

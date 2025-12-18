@@ -97,10 +97,70 @@ console.log('[SUPABASE-AUTH] Script loaded');
       return null;
     };
 
+    // Small UI helper to show status on the OAuth callback page (if present)
+    const updateAuthCallbackStatus = (msg, level='info') => {
+      try {
+        const el = document.getElementById('auth-status');
+        if (!el) return;
+        el.textContent = msg;
+        el.style.color = level === 'error' ? '#ff6b6b' : (level === 'success' ? '#7ef6a7' : '#cfcfcf');
+      } catch (e) {}
+    };
+
+    // Expose a retry function to the page button
+    window.vibeAuthRetry = async () => {
+      updateAuthCallbackStatus('Retrying authentication exchange...');
+      // try visible url extraction first
+      try {
+        let session = null;
+        try { session = await handleVisibleUrl(); } catch (e) { session = null; }
+        if (session) {
+          updateAuthCallbackStatus('Found session tokens, sending to server...');
+          const r = await sendSessionToServer(session);
+          if (r && r.ok) { updateAuthCallbackStatus('Signed in successfully — redirecting...', 'success'); setTimeout(() => window.location = '/', 800); return; }
+          const txt = r ? await r.text().catch(() => '') : 'No response';
+          updateAuthCallbackStatus('Server exchange failed: ' + (txt || 'error'), 'error');
+          return;
+        }
+
+        // If no session, try manual extraction from hash fragment
+        const hashParams = new URLSearchParams(window.location.hash.substring(1));
+        const access_token = hashParams.get('access_token');
+        const refresh_token = hashParams.get('refresh_token');
+        if (access_token) {
+          updateAuthCallbackStatus('Found access token in URL, exchanging with server...');
+          const sessionObj = { access_token, refresh_token, token_type: hashParams.get('token_type') || 'Bearer', user: { id: 'pending' } };
+          const r = await sendSessionToServer(sessionObj);
+          if (r && r.ok) { updateAuthCallbackStatus('Signed in successfully — redirecting...', 'success'); setTimeout(() => window.location = '/', 800); return; }
+          const txt = r ? await r.text().catch(() => '') : 'No response';
+          updateAuthCallbackStatus('Server exchange failed: ' + (txt || 'error'), 'error');
+          return;
+        }
+
+        updateAuthCallbackStatus('No tokens found in URL. Ensure your browser preserves URL fragments and try again.', 'error');
+      } catch (e) {
+        updateAuthCallbackStatus('Unexpected error: ' + (e && e.message) , 'error');
+      }
+    };
+
+    // Attach retry button and auto-run retry on pages with auth-status element
+    document.addEventListener('DOMContentLoaded', () => {
+      try {
+        const statusEl = document.getElementById('auth-status');
+        if (!statusEl) return;
+        // Auto-attempt exchange once shortly after load
+        setTimeout(() => { try { window.vibeAuthRetry(); } catch (e) {} }, 250);
+
+        const btn = document.getElementById('auth-retry');
+        if (btn) btn.addEventListener('click', () => { try { window.vibeAuthRetry(); } catch (e) {} });
+      } catch (e) {}
+    });
+
     // Helper: send current session (access token + user id) to server bridge
     const sendSessionToServer = async (session) => {
       if (!session || !session.access_token) {
         console.warn('[SUPABASE-AUTH] sendSessionToServer: missing session token', { hasSession: !!session, hasToken: !!(session && session.access_token) });
+        updateAuthCallbackStatus('Missing session token; cannot exchange with server', 'error');
         return null;
       }
       
@@ -152,6 +212,20 @@ console.log('[SUPABASE-AUTH] Script loaded');
       }
     };
 
+    // Prevent rapid resend loops: store timestamp when we last exchanged a session
+    const EXCHANGE_KEY = 'vibenest_session_exchanged';
+    const recentlyExchanged = () => {
+      try {
+        const v = sessionStorage.getItem(EXCHANGE_KEY);
+        if (!v) return false;
+        const t = parseInt(v, 10) || 0;
+        return (Date.now() - t) < 10 * 1000; // 10 seconds
+      } catch (e) { return false; }
+    };
+    const markExchanged = () => {
+      try { sessionStorage.setItem(EXCHANGE_KEY, String(Date.now())); } catch (e) {}
+    };
+
     // On page load: handle redirect sign-in flow first (parse tokens from URL), then fallback to existing session
     try {
       console.log('[SUPABASE-AUTH] Page load: checking for OAuth redirect or existing session...');
@@ -185,6 +259,7 @@ console.log('[SUPABASE-AUTH] Script loaded');
       
       if (access_token) {
         console.log('[SUPABASE-AUTH] 🔑 Found access_token in URL hash, creating session manually...');
+        updateAuthCallbackStatus('Found access token in URL, sending to server...');
         try {
           // Create a minimal session object to send to the server
           const session = {
@@ -205,6 +280,7 @@ console.log('[SUPABASE-AUTH] Script loaded');
           
           if (r && r.ok) {
             console.log('[SUPABASE-AUTH] ✓ Server session created successfully, redirecting to /');
+            updateAuthCallbackStatus('Signed in successfully — redirecting...', 'success');
             // Give a small delay to ensure logs are sent before redirect
             setTimeout(() => {
               window.location = '/';
@@ -213,12 +289,14 @@ console.log('[SUPABASE-AUTH] Script loaded');
           } else if (r) {
             const errText = await r.text();
             console.error('[SUPABASE-AUTH] ❌ Failed to exchange session with server:', errText);
+            updateAuthCallbackStatus('Server exchange failed: ' + errText, 'error');
             setTimeout(() => {
               window.location = '/login?error=' + encodeURIComponent('Server session failed: ' + errText);
             }, 500);
             return;
           } else {
             console.error('[SUPABASE-AUTH] ❌ No response from server');
+            updateAuthCallbackStatus('No response from server', 'error');
             setTimeout(() => {
               window.location = '/login?error=' + encodeURIComponent('No response from server');
             }, 500);
@@ -226,6 +304,7 @@ console.log('[SUPABASE-AUTH] Script loaded');
           }
         } catch (e) {
           console.error('[SUPABASE-AUTH] ❌ Manual session extraction failed:', e && e.message, e);
+          updateAuthCallbackStatus('Error during session exchange: ' + (e && e.message || 'unknown'), 'error');
           setTimeout(() => {
             window.location = '/login?error=' + encodeURIComponent('Error: ' + (e && e.message || 'unknown'));
           }, 500);
@@ -286,16 +365,28 @@ console.log('[SUPABASE-AUTH] Script loaded');
       }
       console.log('[SUPABASE-AUTH] Existing session found:', !!existingSession);
       if (existingSession) {
-        console.log('[SUPABASE-AUTH] 📤 Sending existing session to server...');
-        console.log('[SUPABASE-AUTH] Session user ID:', existingSession.user?.id?.substring(0, 8));
-        const r = await sendSessionToServer(existingSession);
-        console.log('[SUPABASE-AUTH] Server exchange response:', r ? r.status : 'null');
-        if (r && r.ok) { 
-          console.log('[SUPABASE-AUTH] ✓ Server session created successfully, redirecting to /');
-          window.location = '/'; 
-          return; 
+        if (recentlyExchanged()) {
+          console.log('[SUPABASE-AUTH] Recent session exchange detected, skipping');
         } else {
-          console.error('[SUPABASE-AUTH] ❌ Failed to exchange existing session with server');
+          console.log('[SUPABASE-AUTH] 📤 Sending existing session to server...');
+          console.log('[SUPABASE-AUTH] Session user ID:', existingSession.user?.id?.substring(0, 8));
+          const r = await sendSessionToServer(existingSession);
+          console.log('[SUPABASE-AUTH] Server exchange response:', r ? r.status : 'null');
+          markExchanged();
+          if (r && r.ok) {
+            // Inspect JSON to see if server already requested a different navigation (2FA/setup)
+            let j = null;
+            try { j = await r.clone().json(); } catch (e) { j = null; }
+            if (j && (j.needs_2fa || j.needs_setup)) {
+              // sendSessionToServer already handled redirect; stop further action
+              return;
+            }
+            console.log('[SUPABASE-AUTH] ✓ Server session created successfully, redirecting to /');
+            window.location = '/';
+            return;
+          } else {
+            console.error('[SUPABASE-AUTH] ❌ Failed to exchange existing session with server');
+          }
         }
       }
       console.log('[SUPABASE-AUTH] ℹ️  No Supabase session found on page load - server-side auth will handle redirect if needed');
@@ -375,7 +466,9 @@ console.log('[SUPABASE-AUTH] Script loaded');
         const email = fd.get('email');
         const password = fd.get('password');
         const username = fd.get('username');
-        const displayName = fd.get('displayName') || username;
+        let displayName = fd.get('displayName') || username;
+        // Normalize displayName: strip leading '@' if present to avoid confusion with emails
+        if (typeof displayName === 'string' && displayName.startsWith('@')) displayName = displayName.slice(1);
 
         // create account via Supabase client (this will trigger email confirmation if configured)
         try {

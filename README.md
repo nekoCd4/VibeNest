@@ -175,12 +175,24 @@ curl -i -c cookies.txt -L -X POST \
   -d "confirmPassword=supersecret" \
   -d "displayName=Tester" \
   http://localhost:3000/register
+
+# Notes
+- Leading `@` characters in display names are stripped at registration time (so the stored `display_name` will not start with `@`).
+- Login accepts display name handles with or without a leading `@` (the server will try both forms for compatibility).
 ```
 
 3. Login (keep cookies) and visit the upload page:
 
 ```bash
+# Login by username
 curl -i -L -c cookies.txt -b cookies.txt -X POST -d "username=testuser" -d "password=supersecret" http://localhost:3000/login
+
+# Login by display name (handles are supported). Both of the following should work if the user has display name "test4":
+# Without @
+curl -i -L -c cookies.txt -b cookies.txt -X POST -d "username=test4" -d "password=supersecret" http://localhost:3000/login
+# With @
+curl -i -L -c cookies.txt -b cookies.txt -X POST -d "username=@test4" -d "password=supersecret" http://localhost:3000/login
+
 curl -i -b cookies.txt http://localhost:3000/upload
 ```
 
@@ -198,6 +210,43 @@ curl -i -b cookies.txt -F "photo=@/path/to/image.jpg;type=image/jpeg" -F "captio
 6. Enable email 2FA or Authenticator 2FA at `/setup-2fa` (UI); verify the authenticator token, or for email check the server console for the code when SMTP/Mailjet isn't configured.
 
 7. To test the 2FA login flow after enabling email 2FA, login again and you'll be redirected to `/2fa-login` where you need to enter the code emailed to the user or logged in server stdout.
+
+Manual test for display-name handles:
+
+```bash
+# Register a test user (displayName with @)
+curl -i -L -X POST \
+  -d "username=testhandle" \
+  -d "email=testhandle@example.com" \
+  -d "password=supersecret" \
+  -d "confirmPassword=supersecret" \
+  -d "displayName=@test4" \
+  http://localhost:3000/register
+
+# Attempt login using '@test4' (should work)
+curl -i -L -c cookies.txt -b cookies.txt -X POST -d "username=@test4" -d "password=supersecret" http://localhost:3000/login
+
+# Attempt login using 'test4' (should also work)
+curl -i -L -c cookies.txt -b cookies.txt -X POST -d "username=test4" -d "password=supersecret" http://localhost:3000/login
+```
+
+Migration: normalize existing display names
+
+```bash
+# Dry-run (shows what would change, writes a backup JSON)
+node scripts/normalize_display_names.js
+
+# Apply changes (writes backup JSON and updates profiles)
+node scripts/normalize_display_names.js --apply
+
+# Or use npm script
+npm run migrate:normalize-display-names
+```
+
+Notes:
+- The script writes a backup file at `scripts/normalize_display_names.backup.json` and a results file `scripts/normalize_display_names.results.TIMESTAMP.json` so you can review/rollback manually.
+- If a stripping operation would result in a conflicting display name, the script appends `-<shortid>` (first 6 chars of user id) to make it unique and logs the change.
+
 
 8. To generate backup codes for authenticator 2FA (single use), use the button on `/setup-2fa` or POST to `/api/2fa/backup-codes/regenerate`.
 

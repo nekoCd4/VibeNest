@@ -70,11 +70,18 @@
           <% if (typeof debugCode !== 'undefined' && debugCode) { %>
             <div class="text-center mt-2 text-sm text-yellow-300">Development code: <strong><%= debugCode %></strong></div>
           <% } %>
-          <button id="resend-email-code" 
-                  type="button"
-                  class="w-full text-sm text-gray-400 mt-2 hover:underline">
-            Resend code
-          </button>
+          <div class="grid gap-2">
+            <button id="resend-email-code" 
+                    type="button"
+                    class="w-full text-sm text-gray-400 mt-2 hover:underline">
+              Resend code
+            </button>
+            <button id="reset-2fa" 
+                    type="button"
+                    class="w-full text-sm text-red-400 mt-1 hover:underline">
+              Reset account & resend verification email
+            </button>
+          </div>
         </div>
       <% } else if (twoFactorMethod === 'magic_link') { %>
         <div class="p-6 border border-gray-700 rounded-lg space-y-4">
@@ -160,6 +167,32 @@
           } catch (e) {
             magicBtn.textContent = 'Error';
             magicBtn.disabled = false;
+          }
+        });
+      }
+
+      const resetBtn = document.getElementById('reset-2fa');
+      if (resetBtn) {
+        resetBtn.addEventListener('click', async () => {
+          if (!confirm('This will clear your 2FA setup and send a new verification email to your account. Continue?')) return;
+          resetBtn.disabled = true;
+          resetBtn.textContent = 'Resetting...';
+          try {
+            const resp = await fetch('/2fa-reset', { method: 'POST' });
+            const json = await resp.json().catch(() => null);
+            if (resp.ok && json && json.success) {
+              resetBtn.textContent = 'Verification sent — check your email';
+              resetBtn.className = 'w-full text-sm text-green-400 mt-1';
+              setTimeout(() => { resetBtn.textContent = 'Reset account & resend verification email'; resetBtn.disabled = false; resetBtn.className='w-full text-sm text-red-400 mt-1 hover:underline'; }, 5000);
+              // Optionally redirect to check-email page
+              setTimeout(() => { window.location = '/check-email?email=' + encodeURIComponent('<%= (typeof debugCode !== "undefined" && debugCode) ? "" : "" %>'); }, 1200);
+            } else {
+              resetBtn.textContent = (json && json.error) ? json.error : 'Error';
+              resetBtn.disabled = false;
+            }
+          } catch (e) {
+            resetBtn.textContent = 'Error';
+            resetBtn.disabled = false;
           }
         });
       }
