@@ -1237,24 +1237,62 @@ app.post('/login', async (req, res) => {
       return res.render('login', { message: 'Username and password required', GOOGLE_OAUTH: app.locals.GOOGLE_OAUTH, ENTRA_OAUTH: app.locals.ENTRA_OAUTH, SUPABASE_ANON_KEY: app.locals.SUPABASE_ANON_KEY, user: req.user });
     }
 
-    // Resolve username to email
+    // Resolve identifier (email | username | display name) to a concrete email address
     let email = null;
-    if (supabaseAdmin) {
-      try {
-        const { data: profileData } = await supabaseAdmin.from('profiles').select('id').eq('username', username).limit(1).maybeSingle();
-        if (profileData && profileData.id) {
-          const adminResp = await supabaseAdmin.auth.admin.getUserById(profileData.id);
-          const fetchedUser = (adminResp && (adminResp.user || adminResp.data)) || adminResp;
-          if (fetchedUser && fetchedUser.email) email = fetchedUser.email;
+    const identifier = String(username).trim();
+    try {
+      // If user supplied an email-like identifier, use it directly
+      if (identifier.includes('@')) {
+        email = identifier.toLowerCase();
+      } else {
+        // Try high-level helper to find by username (may also consult auth metadata)
+        try {
+          const found = await supabaseDb.users.findByUsername(identifier).catch(() => null);
+          if (found && found.email) {
+            email = found.email;
+          }
+        } catch (e) {
+          console.warn('[LOGIN] findByUsername error:', e && e.message);
         }
-      } catch (e) {
-        console.warn('Error resolving username:', e && e.message);
+
+        // If still not found, try matching display_name in profiles (case-insensitive)
+        if (!email && supabaseAdmin) {
+          try {
+            const { data: profileByDisplay } = await supabaseAdmin.from('profiles')
+              .select('id, display_name')
+              .ilike('display_name', identifier)
+              .limit(1)
+              .maybeSingle();
+            if (profileByDisplay && profileByDisplay.id) {
+              const adminResp = await supabaseAdmin.auth.admin.getUserById(profileByDisplay.id).catch(() => null);
+              const fetchedUser = (adminResp && (adminResp.user || adminResp.data)) || adminResp;
+              if (fetchedUser && fetchedUser.email) email = fetchedUser.email;
+            }
+          } catch (e) {
+            console.warn('[LOGIN] display_name lookup error:', e && e.message);
+          }
+        }
       }
+    } catch (e) {
+      console.warn('[LOGIN] Identifier resolution error:', e && e.message);
     }
 
     if (!email) {
       console.log('[LOGIN] Username lookup failed for', username);
-      return res.render('login', { message: 'Invalid username or password', GOOGLE_OAUTH: app.locals.GOOGLE_OAUTH, ENTRA_OAUTH: app.locals.ENTRA_OAUTH, SUPABASE_ANON_KEY: app.locals.SUPABASE_ANON_KEY, user: req.user });
+      // Fallback: attempt to resolve username via supabaseDb helper (searches auth users)
+      try {
+        const found = await supabaseDb.users.findByUsername(username);
+        if (found && found.email) {
+          console.log('[LOGIN] Fallback found email via supabaseDb.users.findByUsername for', username, '->', found.email.substring(0,6) + '...');
+          email = found.email;
+        }
+      } catch (fbErr) {
+        console.warn('[LOGIN] Fallback username lookup error:', fbErr && fbErr.message);
+      }
+
+      if (!email) {
+        return res.render('login', { message: 'Invalid username or password', GOOGLE_OAUTH: app.locals.GOOGLE_OAUTH, ENTRA_OAUTH: app.locals.ENTRA_OAUTH, SUPABASE_ANON_KEY: app.locals.SUPABASE_ANON_KEY, user: req.user });
+      }
     }
 
     // Attempt login with Supabase

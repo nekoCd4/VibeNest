@@ -22,8 +22,8 @@
 
         <form method="POST" action="/login" style="display:grid;gap:12px">
             <div class="form-group">
-                <label for="username">Username</label>
-                <input type="text" id="username" name="username" required autocomplete="username">
+                    <label for="username">Email, username, or display name</label>
+                    <input type="text" id="username" name="username" placeholder="you@example.com or display name" required autocomplete="username">
             </div>
 
             <div class="form-group">
@@ -71,9 +71,18 @@
     <script src="/js/theme-toggle.js"></script>
         <% if (locals.SUPABASE_ANON_KEY && locals.SUPABASE_ANON_KEY.length) { %>
         <script>
-            window.SUPABASE_URL = <%= JSON.stringify(process.env.SUPABASE_URL || '') %>;
-            window.SUPABASE_ANON_KEY = <%= JSON.stringify(locals.SUPABASE_ANON_KEY) %>;
+            // Server-provided Supabase values (rendered as plain strings)
+            window.SUPABASE_URL = "<%= process.env.SUPABASE_URL || '' %>";
+            window.SUPABASE_ANON_KEY = "<%= locals.SUPABASE_ANON_KEY || '' %>";
         </script>
+                <script>
+                        // Debug: show Supabase client values exposed to the page (sanitized)
+                        try {
+                            const preview = (window.SUPABASE_URL||'');
+                            console.log('[PAGE] SUPABASE_URL (preview):', preview.length ? (preview.substring(0,40) + (preview.length>40 ? '...' : '')) : '(empty)');
+                            console.log('[PAGE] SUPABASE_ANON_KEY present:', !!window.SUPABASE_ANON_KEY, 'length:', (window.SUPABASE_ANON_KEY||'').length || 0);
+                        } catch (e) { console.warn('[PAGE] Supabase debug failed', e && e.message); }
+                </script>
         <!-- Load Supabase library globally before the auth module -->
         <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
         <script type="module" src="/js/supabase-auth.js"></script>
